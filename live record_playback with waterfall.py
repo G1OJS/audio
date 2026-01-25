@@ -7,7 +7,7 @@ import threading
 global audio_buff, out_stream
 
 waterfall_duration = 1
-waterfall_dt = 0.001
+waterfall_dt = 0.0005
 waterfall_update_dt = 0.1
 sample_rate = 8000
 max_freq = 1000
@@ -35,7 +35,7 @@ def find_device(device_str_contains):
     print(f"[Audio] No audio device found matching {device_str_contains}")
 
 
-def start_live(input_device_idx, output_device_idx):
+def start_audio(input_device_idx, output_device_idx):
     global out_stream
     stream = pya.open(
         format = pyaudio.paInt16, channels=1, rate = sample_rate,
@@ -46,8 +46,7 @@ def start_live(input_device_idx, output_device_idx):
                           output=True,
                           output_device_index = output_device_idx)
     threading.Thread(target = threaded_output).start()
-    threading.Thread(target = threaded_get_key).start()
-    threading.Thread(target = threaded_printer).start()
+
 
 def threaded_output():
     global audio_buff
@@ -64,16 +63,17 @@ def _callback(in_data, frame_count, time_info, status_flags):
     time.sleep(0)
     return (None, pyaudio.paContinue)
 
-global waterfall, symbol_stream, key, to_print, dot
+global waterfall, to_print, dot
 waterfall = np.zeros((int(waterfall_duration / waterfall_dt), nFreqs))
-symbol_stream = " "
-key = None
 to_print = ""
-
-def threaded_get_key():
-    global waterfall, key, symbol_stream, to_print, dot
-    speclev = 1
+dot = 0.4
+min_dot = 0.04
+max_dot = 0.4
+key = None
     
+def threaded_get_key():
+    global key, to_print, dot
+
     def hysteresis(signal, lo=0.3, hi=0.6):
         out = np.zeros_like(signal, dtype=bool)
         state = False
@@ -85,13 +85,10 @@ def threaded_get_key():
             out[i] = state
         return out
 
-    keychange = (0, 0, 0)
+    t_key_down = False
+    t_key_up = time.time()
     s = ""
-    to_print = ""
-    dot = 0.04
-    min_dot = 0.02
-    max_dot = 0.4
-    
+    speclev = 1
     while(True):
         time.sleep(waterfall_dt)
         z = np.fft.rfft(audio_buff)[:nFreqs]
@@ -102,54 +99,59 @@ def threaded_get_key():
         waterfall[-1,:] = np.clip(10*p, 0, 1)
         key = hysteresis(waterfall[:,int(waterfall.shape[1]/2)])
  
-        k = key[-1]
-        if(k != keychange[0] and time.time()-keychange[1] > 0.01):
-            t = time.time()
-            dt = t - keychange[1]
-            keychange = (k, t, dt)
-            if(not keychange[0]):
-               # with open('runs.csv','a') as f:
-               #     f.write(f"On {dt:5.3f}\n")
-                if(keychange[2] < dot*2):
-                    s = s + "."
-                    new_dot = dot * 0.95 + 0.05 * (keychange[2])
-                    if(max_dot> new_dot > min_dot):
-                        dot = new_dot
-                elif(keychange[2] > dot*2):
-                    s = s + "-"
-            else:
-               # with open('runs.csv','a') as f:
-               #     f.write(f"Off {dt:5.3f}\n")
-                if(keychange[2] > 1.2*dot): # prints on next transition to 'on'; needs an expiry timer
-                    to_print = s
-                    s = ""
+        key_is_down = key[-1]
+        if(not key_is_down and t_key_down):
+            t_key_up = time.time()
+            down_duration = t_key_up - t_key_down
+            t_key_down = False
+            if(down_duration < dot*2):
+                s = s + "."
+                new_dot = dot * 0.85 + 0.15 * down_duration
+                if(max_dot> new_dot > min_dot):
+                    dot = new_dot
+            elif(down_duration > dot * 2):
+                s = s + "-"
+                new_dot = dot * 0.85 + 0.15 * down_duration /3
+                if(max_dot> new_dot > min_dot):
+                    dot = new_dot
 
-            
-            
+        if(t_key_up):
+            if(time.time() - t_key_up > 1.5*dot and len(s)):
+                to_print = s
+                s = ""
+
+        if(key_is_down and t_key_up):
+            t_key_down = time.time()
+            t_key_up = False
+
+
 def time_plot():
     import matplotlib.pyplot as plt
     fig, axs = plt.subplots(2,1, figsize = (8,3))
     waterfall_plot = axs[0].imshow(waterfall, extent = (0, waterfall.shape[1]*50, 0, waterfall.shape[0]))
     key_plot, = axs[1].plot(key)
     axs[1].set_ylim(0,2)
+
     while(True):
         waterfall_plot.set_data(waterfall)
         key_plot.set_ydata(key)
         plt.pause(waterfall_update_dt)
-
         time.sleep(0.001)
 
 def threaded_printer():
-    global to_print
+    global to_print, dot
     while(True):
         time.sleep(0.05)
         if(len(to_print)):
-            print(f"/{to_print}", end ='', flush = True)
+            wpm = 20 * dot / 0.06
+            print(f"{wpm:5.0f} {to_print}")
             to_print = ""
     
 input_device_idx =  find_device(['Mic', 'CODEC'])
 output_device_idx =  find_device(['Spea', 'High'])
-start_live(input_device_idx, output_device_idx)
+start_audio(input_device_idx, output_device_idx)
+threading.Thread(target = threaded_get_key).start()
+threading.Thread(target = threaded_printer).start()
 time_plot()
 
 
