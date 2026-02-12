@@ -6,24 +6,22 @@ import time
 import threading
 import matplotlib.pyplot as plt
     
-global waterfall
+global waterfall, key, wpm, ticker
 
 class AudioFrontEnd:
     
     def __init__(self, device_keywords = ['Mic', 'CODEC']):
         global waterfall
-        waterfall = {'dur':4, 'dt':0, 'df':40, 'fMax':800, 'nf':0, 'waterfall': None, 'idx':0, 'tlast':0}
-        self.sample_rate = 16000
-        self.fft_len = int(self.sample_rate / waterfall['df'])
-        self.audio_buff = np.zeros(self.fft_len, dtype=np.float32)
-        waterfall.update({'dt': len(self.audio_buff) / self.sample_rate})
+        waterfall = {'dur':1, 'dt':0.0005, 'df':50, 'fMax':1000, 'nf':0, 'waterfall': None}
         waterfall.update({'nF': int(waterfall['fMax'] / waterfall['df'])})
-        
         waterfall.update({'waterfall': np.zeros((waterfall['nF'], int(waterfall['dur'] / waterfall['dt'])))})             
         self.pya = pyaudio.PyAudio()
         self.input_device_idx = self.find_device(device_keywords)
+        self.sample_rate = 8000
         self.speclev = 1
-        
+        self.fft_len = int(self.sample_rate / waterfall['df'])
+        self.audio_buff = np.zeros(self.fft_len, dtype=np.float32)
+        threading.Thread(target = self.calc_spectrum).start()
         self.start_audio_in()
 
     def find_device(self, device_str_contains):
@@ -51,45 +49,44 @@ class AudioFrontEnd:
         samples = np.frombuffer(in_data, dtype=np.int16).astype(np.float32)
         ns = len(samples)
         self.audio_buff[:] = samples
-        self.calc_spectrum()
         return (None, pyaudio.paContinue)
 
     def calc_spectrum(self):
-        z = np.fft.rfft(self.audio_buff)[:waterfall['nF']]
-        p = (z.real*z.real + z.imag*z.imag)
-        self.speclev = max(self.speclev, np.max(p))
-        p /= self.speclev
-        i = waterfall['idx']
-        waterfall['waterfall'][:, i] = np.clip(10*p, 0, 1)
-        waterfall['idx'] = (i + 1) % waterfall['waterfall'].shape[1]
-
+        while True:
+            time.sleep(waterfall['dt'])
+            z = np.fft.rfft(self.audio_buff)[:waterfall['nF']]
+            p = (z.real*z.real + z.imag*z.imag)
+            self.speclev = max(self.speclev, np.max(p))
+            p /= self.speclev
+            waterfall['waterfall'][:, :-1] = waterfall['waterfall'][:, 1:]
+            waterfall['waterfall'][:, -1] = np.clip(10*p,0,1)
+           
 class TimingDecoder:
 
-    def __init__(self, ax):
-        self.ax = ax
-        self.key_is_down = False
-        self.n_fbins = waterfall['waterfall'].shape[0]
-        self.fbin = 0
+    def __init__(self):
+        global key
+        key = np.zeros(waterfall['waterfall'].shape[1])
         self.dot = 0.1
-        self.wpm = int(60/(50 * self.dot))
         self.max_dot = 0.15
         self.min_dot = 0.03
-        self.ticker = False
-        self.set_fbin(10)
         self.symbols = ""
         threading.Thread(target = self.get_symbols).start()
         threading.Thread(target = self.decoder).start()
 
-    def set_fbin(self, fbin):
-        if(fbin == self.fbin):
-            return
-        if(self.ticker):
-            self.ticker.set_text(" " * 20)
-        self.fbin = fbin
-        self.ticker = self.ax.text(0, self.fbin / self.n_fbins,'')
-        self.ticker_text = []
-
     def get_symbols(self):
+        global key
+        
+        def hysteresis(signal, lo=0.3, hi=0.6):
+            out = np.zeros_like(signal, dtype=bool)
+            state = False
+            for i, v in enumerate(signal):
+                if not state and v > hi:
+                    state = True
+                elif state and v < lo:
+                    state = False
+                out[i] = state
+            return out
+
         t_key_down = False
         t_key_up = time.time()
         s = ""
@@ -97,24 +94,17 @@ class TimingDecoder:
         down_durations = []
         
         while(True):
-            time.sleep(0.002)
-            
-            level = waterfall['waterfall'][self.fbin, waterfall['idx']]
-            if not self.key_is_down and level > 0.6:
-                self.key_is_down = True
-            elif self.key_is_down and level < 0.3:
-                self.key_is_down = False
+            time.sleep(0.001)
+            key = hysteresis(waterfall['waterfall'][int(waterfall['waterfall'].shape[0]/2), :])
 
-            if(not self.key_is_down and t_key_down):
+            key_is_down = key[-1]
+            if(not key_is_down and t_key_down):
                 t_key_up = time.time()
                 down_duration = t_key_up - t_key_down
                 t_key_down = False
                 down_durations.append(down_duration)
                 down_durations = down_durations[-8:]
-                new_dot = np.percentile(down_durations, 20)
-                if(self.max_dot>new_dot>self.min_dot):
-                    self.dot = 0.5 * self.dot + 0.5 * new_dot
-                    self.wpm = int(60/(50 * self.dot))
+                self.dot = np.clip(np.percentile(down_durations, 20), self.min_dot, self.max_dot)
                 if(down_duration < self.dot * 2):
                     s = s + "."
                 elif(down_duration > self.dot * 2):
@@ -123,11 +113,12 @@ class TimingDecoder:
                 if(time.time() - t_key_up > 1.5*self.dot and len(s)):
                     self.symbols = s
                     s = ""
-            if(self.key_is_down and t_key_up):
+            if(key_is_down and t_key_up):
                 t_key_down = time.time()
                 t_key_up = False
 
     def decoder(self):
+        global wpm, ticker
         MORSE = {
         ".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D",
         ".": "E",     "..-.": "F",  "--.": "G",   "....": "H",
@@ -142,42 +133,40 @@ class TimingDecoder:
         "---..": "8", "----.": "9"
         }
 
+        ticker_text = []
         last_symbols = time.time()
         while(True):
-            time.sleep(0.1)
+            time.sleep(0.05)
             if(len(self.symbols)):
                 last_symbols = time.time()
-                self.ticker_text.append(MORSE.get(self.symbols, "?"))
-                self.ticker_text = self.ticker_text[-20:]
+                wpm.set_text(f"{int(60 / (50 * self.dot))} wpm")
+                ticker_text.append(MORSE.get(self.symbols, "?"))
+                ticker_text = ticker_text[-20:]
+                ticker.set_text(''.join(ticker_text))
                 self.symbols = ""
-            self.ticker.set_text(f"{self.wpm} {''.join(self.ticker_text)}")
-            if(time.time() - last_symbols > 14*self.dot and len(self.ticker_text)):
-                if(self.ticker_text[-1] != " "):
-                    self.ticker_text.append(" ")
+            if(time.time() - last_symbols > 14*self.dot and len(ticker_text)):
+                if(ticker_text[-1] != " "):
+                    ticker_text.append(" ")
+                    ticker.set_text(''.join(ticker_text))
 
-        
 def run():
-    global waterfall
-    fig, axs = plt.subplots(1,2, figsize = (8,8))
+    global waterfall, key, wpm, ticker
+    fig, axs = plt.subplots(2,1, figsize = (8,3))
     audio = AudioFrontEnd()
-    waterfall_plot = axs[0].imshow(waterfall['waterfall'], origin = 'lower', aspect='auto')
-    axs[0].set_xticks([])
-    axs[0].set_yticks([])
-    axs[1].set_axis_off()
+    waterfall_plot = axs[0].imshow(waterfall['waterfall'], extent = (0, 5000, 0, 2000))
+    
+    decoder = TimingDecoder()
+    key_plot, = axs[1].plot(key)
+    axs[1].set_ylim(0,2)
+    wpm = fig.text(0.1,0.6,"WPM")
+    ticker = fig.text(0.1,0.8,"TEXT")
 
-    decoders = []
-    for i in range(waterfall['waterfall'].shape[0]):
-        d = TimingDecoder(axs[1])
-        d.set_fbin(i)
-        decoders.append(d)
 
     while True:
         time.sleep(0.01)
-        idx = waterfall['idx']
-        wf = waterfall['waterfall']
-        display = np.hstack((wf[:, idx:], wf[:, :idx]))
-        waterfall_plot.set_data(display)
+        waterfall_plot.set_data(waterfall['waterfall'].copy())
         waterfall_plot.autoscale()
+        key_plot.set_ydata(key)
         plt.pause(0.1)
 
 run()
