@@ -12,11 +12,11 @@ class AudioFrontEnd:
     
     def __init__(self, device_keywords = ['Mic', 'CODEC']):
         global waterfall
-        waterfall = {'dur':4, 'dt':0, 'df':40, 'fMax':800, 'nf':0, 'waterfall': None, 'idx':0, 'tlast':0}
+        waterfall = {'dur':4, 'dt':0.02, 'df':0, 'fMax':800, 'nf':0, 'waterfall': None, 'idx':0, 'tlast':0}
+        waterfall.update({'df': 1 / waterfall['dt']})
         self.sample_rate = 16000
-        self.fft_len = int(self.sample_rate / waterfall['df'])
+        self.fft_len = int(self.sample_rate * waterfall['dt'])
         self.audio_buff = np.zeros(self.fft_len, dtype=np.float32)
-        waterfall.update({'dt': len(self.audio_buff) / self.sample_rate})
         waterfall.update({'nF': int(waterfall['fMax'] / waterfall['df'])})
         
         waterfall.update({'waterfall': np.zeros((waterfall['nF'], int(waterfall['dur'] / waterfall['dt'])))})             
@@ -86,7 +86,7 @@ class TimingDecoder:
         if(self.ticker):
             self.ticker.set_text(" " * 20)
         self.fbin = fbin
-        self.ticker = self.ax.text(0, self.fbin / self.n_fbins,'')
+        self.ticker = self.ax.text(0, (0.5 + self.fbin) / self.n_fbins,'')
         self.ticker_text = []
 
     def get_symbols(self):
@@ -111,7 +111,7 @@ class TimingDecoder:
                 t_key_down = False
                 down_durations.append(down_duration)
                 down_durations = down_durations[-8:]
-                new_dot = np.percentile(down_durations, 20)
+                new_dot = np.percentile(down_durations, 80) / 3
                 if(self.max_dot>new_dot>self.min_dot):
                     self.dot = 0.5 * self.dot + 0.5 * new_dot
                     self.wpm = int(60/(50 * self.dot))
