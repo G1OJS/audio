@@ -7,7 +7,7 @@ RIG = ['Min', 'CODEC']
     
 class Audio_in:
     
-    def __init__(self, device_keywords = RIG, dur = 4, df = 10, dt = 0.01, fft_len = 256, fRng = [300,800]):
+    def __init__(self, device_keywords = RIG, dur = 4, df = 10, dt = 0.01, fft_len = 128, fRng = [300,800]):
         dt_req = dt
         fft_out_len = fft_len //2 + 1
         fmax = fft_out_len * df
@@ -23,13 +23,13 @@ class Audio_in:
         binRng = [int(fRng[0]/df), int(fRng[1]/df) - 1]
         fRng = [binRng[0] * df, binRng[1] * df]
         self.params = {'dur':dur, 'dt':dt, 'dt_wpm': int(12/dt)/10, 'hpf': hops_per_fft, 'df':df, 'sr':sample_rate, 'fmax':fmax, 'fRng':fRng, 'binRng': binRng}
-        self.specbuff = {'pgrid': np.ones((1+binRng[1]-binRng[0], int(self.params['dur'] / self.params['dt']))), 'idx':0}
+        self.specbuff = {'pgrid': np.zeros((1+binRng[1]-binRng[0], int(self.params['dur'] / self.params['dt']))), 'idx':0}
 
+        
         self.pya = pyaudio.PyAudio()
         self.input_device_idx = self.find_device(device_keywords)
         self.speclev = 1
         print(self.params)
-        self.specbuff['dt'] = self.params['dt']
         self.window = np.hanning(fft_len)
         self.start_audio_in(sample_rate)
 

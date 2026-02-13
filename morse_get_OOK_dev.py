@@ -15,6 +15,7 @@ class TimingDecoder:
         self.ticker = False
         self.set_fbin(10)
         self.symbols = ""
+        self.locked = False
         threading.Thread(target = self.get_symbols).start()
         threading.Thread(target = self.decoder).start()
 
@@ -39,7 +40,9 @@ class TimingDecoder:
         timing_tolerance = 0.5
         se = self.speed_elements
         t = se[unit]
-        return ((1-timing_tolerance)*t < down_dur < (1+timing_tolerance)*t)
+        good_element = ((1-timing_tolerance)*t < down_dur < (1+timing_tolerance)*t)
+        self.locked = good_element or self.locked
+        return good_element
 
     def get_symbols(self):
         import time
@@ -69,8 +72,6 @@ class TimingDecoder:
                     s = s + "-"
                     self.follow_speed(down_duration, 'dash')
 
-                 
-                    
             if(t_key_up):
                 if(time.time() - t_key_up > 1.5*1.2/self.wpm and len(s)):
                     self.symbols = s
@@ -99,12 +100,12 @@ class TimingDecoder:
         last_symbols = time.time()
         while(True):
             time.sleep(0.1)
-            if(len(self.symbols)):
+            if(len(self.symbols) and self.locked):
                 last_symbols = time.time()
                 self.ticker_text.append(MORSE.get(self.symbols, "?"))
                 self.ticker_text = self.ticker_text[-20:]
                 self.symbols = ""
-            self.ticker.set_text(f"{self.wpm:4.1f} {''.join(self.ticker_text)}")
+                self.ticker.set_text(f"{self.wpm:4.1f} {''.join(self.ticker_text)}")
             if(time.time() - last_symbols > 14*1.2/self.wpm and len(self.ticker_text)):
                 if(self.ticker_text[-1] != " "):
                     self.ticker_text.append(" ")
@@ -117,7 +118,7 @@ def run():
     import numpy as np
         
     fig, axs = plt.subplots(1,2, figsize = (8,8))
-    audio = Audio_in(fRng = [400, 600])
+    audio = Audio_in(df = 50, dt = 0.01, fRng = [450, 550])
     spec = audio.specbuff
     spec_plot = axs[0].imshow(spec['pgrid'], origin = 'lower', aspect='auto', interpolation = 'none')
     axs[0].set_xticks([])
