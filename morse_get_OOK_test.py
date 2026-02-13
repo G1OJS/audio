@@ -177,8 +177,6 @@ def run():
     axs[0].set_yticks([])
     axs[1].set_axis_off()
 
-
-    #currently working quite well but laggy
     decoders = []
     for i in range(waterfall['waterfall'].shape[0]):
         d = TimingDecoder(axs[1])
