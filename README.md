@@ -1,3 +1,4 @@
 # PyMorseLive
-Hacked-together simple timing-based morse decoder
-<img width="800" height="300" alt="Figure_1" src="https://github.com/user-attachments/assets/0a8c156a-6de9-4b1c-ad82-65d806e4c00b" />
+Simple multi-channel timing-based morse decoder
+
+<img width="1400" height="500" alt="screenshot" src="https://github.com/user-attachments/assets/c02b1718-0179-41ab-8009-b37c32aa073e" />
