@@ -16,7 +16,12 @@ MORSE = {
 
 "-----": "0", ".----": "1", "..---": "2", "...--": "3",
 "....-": "4", ".....": "5", "-....": "6", "--...": "7",
-"---..": "8", "----.": "9"
+"---..": "8", "----.": "9",
+
+"-..-.": "/", 
+
+".-.-.": "_AR_", "..--..": "?", "-...-": "_BK_", "...-.-": "_SK_", "..-.-.": "_UR_"
+
 }
 
 import numpy as np
@@ -90,7 +95,7 @@ class TimingDecoder:
                 key_up_dur = time.time() - self.t_key_up
                 if key_up_dur > CHARSEP_THRESHOLD * self.speed_elements['charsep']:
                     if(len(s)):
-                        ch = MORSE.get(s, "_")
+                        ch = MORSE.get(s, "*")
                         self.ticker_text.append(ch)
                         self.ticker_text = self.ticker_text[-20:]
                         self.ticker.set_text(f"{self.wpm:4.1f} {''.join(self.ticker_text)}")                        
@@ -110,7 +115,7 @@ def run():
     from audio import Audio_in
     import time
 
-    audio = Audio_in(df = 50, dt = 0.005, fRng = [400, 700])
+    audio = Audio_in(df = 50, dt = 0.005, fRng = [200, 1400])
 
     refresh_dt = 0.025
     nf = audio.params['nf']
