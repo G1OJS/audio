@@ -1,9 +1,11 @@
-MAX_WPM = 35
+MAX_WPM = 45
 MIN_WPM = 12
-DOT_TOL_FACTS = (0.8, 2)
-DASH_TOL_FACTS = (0.5, 1.2)
+DOT_TOL_FACTS = (0.6, 2)
+DASH_TOL_FACTS = (0.5, 1.4)
 CHARSEP_THRESHOLD = 0.7
 WORDSEP_THRESHOLD = 0.7
+
+import numpy as np
         
 class TimingDecoder:
 
@@ -12,13 +14,13 @@ class TimingDecoder:
         self.ax = ax
         self.spec = spec
         self.key_is_down = False
-        self.n_fbins = spec['pgrid'].shape[0]
+        self.n_fbins = spec['buff'].shape[0]
         self.fbin = 0
         self.wpm = 16
         self.keydown_history = {'buffer':[1.2/self.wpm]*10, 'idx':0}
         self.check_speed(1.2/self.wpm)
         self.ticker = False
-        self.set_fbin(10)
+        self.ticker_text = []
         self.symbols = ""
         threading.Thread(target = self.get_symbols).start()
         threading.Thread(target = self.decoder).start()
@@ -33,7 +35,6 @@ class TimingDecoder:
         self.ticker_text = []
 
     def check_element(self, dur):
-        import numpy as np
         se = self.speed_elements
         if DOT_TOL_FACTS[0]*se['dot'] < dur < DOT_TOL_FACTS[1]*se['dot']:
             return '.'
@@ -42,7 +43,6 @@ class TimingDecoder:
         return ''
 
     def _check_speed(self, dd):
-        import numpy as np
         buffer = self.keydown_history['buffer']
         idx = (self.keydown_history['idx'] + 1) % len(buffer)
         self.keydown_history['idx'] = idx
@@ -69,18 +69,25 @@ class TimingDecoder:
     def get_symbols(self):
         import time
         t_key_down = False
+        keydown_level = 0
         self.t_key_up = time.time()
         s = ""
         
         while(True):
-            time.sleep(0.002)
+            time.sleep(self.spec['dt'])
 
             # hysteresis
-            level = self.spec['pgrid'][self.fbin, self.spec['idx']]
-            if not self.key_is_down and level > 0.6:
+            level = self.spec['buff'][self.fbin, -1]
+            if not self.key_is_down and level > 0.6 * keydown_level:
                 self.key_is_down = True
-            elif self.key_is_down and level < 0.3:
+                keydown_level = level
+            elif self.key_is_down and level < 0.4 * keydown_level:
                 self.key_is_down = False
+
+        #    if(self.key_is_down):
+        
+            #idx = spec['idx']
+            #wf = spec['pgrid']
 
             # key_down to key_up transition
             if t_key_down and not self.key_is_down:
@@ -126,6 +133,8 @@ class TimingDecoder:
 
         while(True):
             time.sleep(0.2)
+            if(not self.ticker):
+                continue
             
             # decode and print single character
             if len(self.symbols):
@@ -144,28 +153,24 @@ def run():
     import matplotlib.pyplot as plt
     from audio import Audio_in
     import time
-    import numpy as np
         
-    fig, axs = plt.subplots(1,2, figsize = (8,8))
+    fig, axs = plt.subplots(1,2, figsize = (14,5))
     audio = Audio_in(dur = 2, df = 50, dt = 0.01, fRng = [400, 700])
     spec = audio.specbuff
-    spec_plot = axs[0].imshow(spec['pgrid'], origin = 'lower', aspect='auto', interpolation = 'none')
+    spec_plot = axs[0].imshow(spec['buff'], origin = 'lower', aspect='auto', interpolation = 'none')
     axs[0].set_xticks([])
     axs[0].set_yticks([])
     axs[1].set_axis_off()
 
     decoders = []
-    for i in range(spec['pgrid'].shape[0]):
+    for i in range(spec['buff'].shape[0]):
         d = TimingDecoder(axs[1], spec)
         d.set_fbin(i)
         decoders.append(d)
 
     while True:
-        time.sleep(0.01)
-        idx = spec['idx']
-        wf = spec['pgrid']
-        display = np.hstack((wf[:, idx:], wf[:, :idx]))
-        spec_plot.set_data(display)
+        time.sleep(0.05)
+        spec_plot.set_data(spec['buff'])
         spec_plot.autoscale()
         plt.pause(0.03)
 

@@ -23,16 +23,19 @@ class Audio_in:
         binRng = [int(fRng[0]/df), int(fRng[1]/df) - 1]
         fRng = [binRng[0] * df, binRng[1] * df]
         self.params = {'dur':dur, 'dt':dt, 'dt_wpm': int(12/dt)/10, 'hpf': hops_per_fft, 'df':df, 'sr':sample_rate, 'fmax':fmax, 'fRng':fRng, 'binRng': binRng}
-        self.specbuff = {'pgrid': np.ones((1+binRng[1]-binRng[0], int(self.params['dur'] / self.params['dt']))), 'idx':0}
 
+        nf, nt = 1+binRng[1]-binRng[0], int(self.params['dur'] / self.params['dt'])
+        self.pgrid = np.ones((nf, nt))
+        self.ratio = np.zeros((nf, nt))
+        self.grid_idx = 0
+        self.specbuff = {'buff':self.ratio, 'shape': {'nf':nf, 'nt':nt}, 'dt':self.params['dt']}
         self.pya = pyaudio.PyAudio()
         self.input_device_idx = self.find_device(device_keywords)
-        self.speclev = 1
-        print(self.params)
-        self.specbuff['dt'] = self.params['dt']
         self.window = np.hanning(fft_len)
         self.start_audio_in(sample_rate)
-
+        
+        print(self.params)
+        
     def find_device(self, device_str_contains):
         if(not device_str_contains): #(this check probably shouldn't be needed - check calling code)
             return
@@ -64,33 +67,32 @@ class Audio_in:
 
     def calc_spectrum(self):
         z = np.fft.rfft(self.audiobuff * self.window)[self.params['binRng'][0]:self.params['binRng'][1]+1]
-        p = (z.real*z.real + z.imag*z.imag)
-        self.speclev = max(self.speclev, np.max(p))
-        p /= self.speclev
-        i = self.specbuff['idx']
-        self.specbuff['pgrid'][:, i] = np.clip(10*p, 0, 1)
-        self.specbuff['idx'] = (i + 1) % self.specbuff['pgrid'].shape[1]
+        pwr = (z.real*z.real + z.imag*z.imag)
+        i = self.grid_idx
+        self.pgrid[:, i] = pwr
+        noise = np.percentile(self.pgrid, 20,  axis = 1)
+        ratio = pwr / noise
+        ratio = np.clip(ratio, 10,100)
+        self.ratio[:, i] = ratio
+        self.specbuff['buff'] = np.hstack((self.ratio[:, i:], self.ratio[:, :i]))
+        self.grid_idx = (i + 1) % self.pgrid.shape[1]
 
 # testing code
 if __name__ == "__main__":
 
     def test():
         import matplotlib.pyplot as plt
-        fig, axs = plt.subplots(1,2, figsize = (8,8))
-        audio = Audio_in()
-        print(audio.specbuff['pgrid'].shape)
-        spec_plot = axs[0].imshow(audio.specbuff['pgrid'], origin = 'lower', aspect='auto', interpolation = 'none')
+        fig, axs = plt.subplots(1,2, figsize = (14,5))
+        audio = Audio_in(dur = 1, dt = 0.005, df = 50)
+        spec_plot = axs[0].imshow(audio.specbuff['buff'], origin = 'lower', aspect='auto', interpolation = 'none')
         axs[0].set_xticks([])
         axs[0].set_yticks([])
         axs[1].set_axis_off()
 
         while True:
-            time.sleep(0.01)
-            idx = audio.specbuff['idx']
-            p = audio.specbuff['pgrid']
-            display = np.hstack((p[:, idx:], p[:, :idx]))
-            spec_plot.set_data(display)
+            time.sleep(0.05)
+            spec_plot.set_data(audio.specbuff['buff'])
             spec_plot.autoscale()
-            plt.pause(0.1)
+            plt.pause(0.05)
 
     test()
