@@ -1,7 +1,7 @@
 MAX_WPM = 45
 MIN_WPM = 12
 DOT_TOL_FACTS = (0.6, 2)
-DASH_TOL_FACTS = (0.5, 1.4)
+DASH_TOL_FACTS = (0.6, 1.4)
 CHARSEP_THRESHOLD = 0.6
 WORDSEP_THRESHOLD = 0.7
 
@@ -18,7 +18,7 @@ MORSE = {
 "....-": "4", ".....": "5", "-....": "6", "--...": "7",
 "---..": "8", "----.": "9",
 
-"-..-.": "/", 
+"-..-.": "/", "..--": "Ü",
 
 ".-.-.": "_AR_", "..--..": "?", "-...-": "_BK_", "...-.-": "_SK_", "..-.-.": "_UR_"
 
@@ -39,7 +39,8 @@ class TimingDecoder:
         self.keydown_history = {'buffer':[1.2/self.wpm]*10, 'idx':0}
         self.check_speed(1.2/self.wpm)
         self.ticker = False
-        self.ticker_text = [' ']*20
+        self.ticker_text_blank = [' ']*20
+        self.ticker_text = self.ticker_text_blank
         self.symbols = ""
         threading.Thread(target = self.get_symbols).start()
         self.ticker = self.text_ax.text(0, fbin,'*')
@@ -95,11 +96,14 @@ class TimingDecoder:
                 key_up_dur = time.time() - self.t_key_up
                 if key_up_dur > CHARSEP_THRESHOLD * self.speed_elements['charsep']:
                     if(len(s)):
-                        ch = MORSE.get(s, "*")
-                        self.ticker_text.append(ch)
                         self.ticker_text = self.ticker_text[-20:]
-                        self.ticker.set_text(f"{self.wpm:4.1f} {''.join(self.ticker_text)}")                        
+                        ch = MORSE.get(s, "*")
                         s = ""
+                        self.ticker_text.append(ch)
+                        tkrstr = ''.join(self.ticker_text)
+                        for pat in [' E E', 'E E ', ' E ', ' T ', ' IE ', 'EEE', 'EIE']:
+                            tkrstr = tkrstr.replace(pat,'')
+                        self.ticker.set_text(f"{self.wpm:4.1f} {tkrstr}")                        
                 if key_up_dur > WORDSEP_THRESHOLD * self.speed_elements['wordsep']:
                     if(len(self.ticker_text)):
                         if(self.ticker_text[-1] != " "):
@@ -115,7 +119,7 @@ def run():
     from audio import Audio_in
     import time
 
-    audio = Audio_in(df = 50, dt = 0.005, fRng = [200, 1400])
+    audio = Audio_in(df = 50, dt = 0.005, fRng = [200, 1400], snr_clip = [18,80])
 
     refresh_dt = 0.025
     nf = audio.params['nf']

@@ -7,7 +7,7 @@ RIG = ['Min', 'CODEC']
     
 class Audio_in:
     
-    def __init__(self, device_keywords = RIG, dur = 0.5, df = 10, dt = 0.01, fft_len = 256, fRng = [300,800]):
+    def __init__(self, device_keywords = RIG, dur = 0.5, df = 10, dt = 0.01, fft_len = 256, fRng = [300,800], snr_clip = [0,70]):
         dt_req = dt
         fft_out_len = fft_len //2 + 1
         fmax = fft_out_len * df
@@ -20,13 +20,14 @@ class Audio_in:
         self.frames_perbuff = fft_len // hops_per_fft
         self.audiobuff = np.zeros(fft_len, dtype=np.float32)
 
+        self.snr_clip = snr_clip
         binRng = [int(fRng[0]/df), int(fRng[1]/df) - 1]
         fRng = [binRng[0] * df, binRng[1] * df]
         nf, nt = 1+binRng[1]-binRng[0], int(dur / dt)
         self.params = {'dur':dur, 'dt':dt, 'nf':nf, 'nt':nt, 'dt_wpm': int(12/dt)/10, 'hpf': hops_per_fft, 'df':df, 'sr':sample_rate, 'fmax':fmax, 'fRng':fRng, 'binRng': binRng}
 
-        self.pgrid = np.ones((nf, nt))
-        self.display_grid = np.zeros_like(self.pgrid)
+        self._pgrid = np.ones((nf, nt))
+        self.display_grid = np.zeros_like(self._pgrid)
         self.snr = np.zeros(nf)
         self.grid_idx = 0
         self.pya = pyaudio.PyAudio()
@@ -68,14 +69,15 @@ class Audio_in:
     def calc_spectrum(self):
         z = np.fft.rfft(self.audiobuff * self.window)[self.params['binRng'][0]:self.params['binRng'][1]+1]
         pwr = (z.real*z.real + z.imag*z.imag)
-        noise = np.percentile(self.pgrid, 20,  axis = 1)
+        noise = np.percentile(self._pgrid, 20,  axis = 1)
         snr = pwr / noise
         
         i = self.grid_idx
-        self.pgrid[:, i] = pwr
-        self.snr = np.clip(snr, 0,50) / 50
-        self.display_grid = np.roll(self.pgrid, -i, axis = 1)
-        self.grid_idx = (i + 1) % self.pgrid.shape[1]
+        snr_clip = self.snr_clip
+        self._pgrid[:, i] = pwr
+        self.snr = np.clip(snr, snr_clip[0],snr_clip[1]) / snr_clip[1]
+        self.display_grid = np.roll(self._pgrid, -i, axis = 1)        
+        self.grid_idx = (i + 1) % self._pgrid.shape[1]
 
 # testing code
 if __name__ == "__main__":
@@ -83,21 +85,20 @@ if __name__ == "__main__":
     def test():
         import matplotlib.pyplot as plt
         fig, axs = plt.subplots(1,2, figsize = (14,5))
-        audio = Audio_in(dur = 1, dt = 0.005, df = 50)
-        dt = 0.05
+        audio = Audio_in(dur = 1, dt = 0.005, df = 50, snr_clip = [25,100])
+        refresh_dt = 0.025
         dur = 2
         binRng = audio.params['binRng']
-        waterfall = np.zeros((1 + binRng[1] - binRng[0], int(dur/dt)))
+        waterfall = np.zeros((1 + binRng[1] - binRng[0], int(dur/refresh_dt)))
         spec_plot = axs[0].imshow(waterfall, origin = 'lower', aspect='auto', interpolation = 'none')
         axs[0].set_xticks([])
         axs[0].set_yticks([])
         axs[1].set_axis_off()
 
         while True:
-            waterfall[:, :-1] = waterfall[:, 1:]
-            waterfall[:, -1] = audio.snr
-            spec_plot.set_data(waterfall)
+            time.sleep(refresh_dt/2)
+            spec_plot.set_data(audio.display_grid)
             spec_plot.autoscale()
-            plt.pause(dt)
+            plt.pause(refresh_dt)
 
     test()
