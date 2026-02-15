@@ -117,7 +117,7 @@ def run():
     from audio import Audio_in
     import time
 
-    audio = Audio_in(df = 20, dt = 0.005, dur = 2,  fRng = [450, 750], snr_clip = [THRESHOLD_SNR, MAX_SNR])
+    audio = Audio_in(df = 20, dt = 0.01, dur = 2,  fRng = [450, 750], snr_clip = [THRESHOLD_SNR, MAX_SNR])
 
     refresh_dt = 0.1
     nf = audio.params['nf']
