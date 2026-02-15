@@ -70,12 +70,12 @@ class Audio_in:
         z = np.fft.rfft(self.audiobuff * self.window)[self.params['binRng'][0]:self.params['binRng'][1]+1]
         pwr = (z.real*z.real + z.imag*z.imag)
         noise = np.percentile(self._pgrid, 20,  axis = 1)
-        snr = pwr / noise
+        self.snr_raw = pwr / noise
         
         i = self.grid_idx
         snr_clip = self.snr_clip
         self._pgrid[:, i] = pwr
-        self.snr = np.clip(snr, snr_clip[0],snr_clip[1]) / snr_clip[1]
+        self.snr = np.clip(self.snr_raw, snr_clip[0],snr_clip[1]) / snr_clip[1]
         self.display_grid = np.roll(self._pgrid, -i, axis = 1)        
         self.grid_idx = (i + 1) % self._pgrid.shape[1]
 

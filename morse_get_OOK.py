@@ -2,9 +2,12 @@ import numpy as np
 import time
 import threading
 
+NDECODERS = 3
+DECODER_MAX_AGE = 30
+THRESHOLD_SNR = 30
 SPEED = {'MAX':45, 'MIN':12, 'ALPHA':0.3}
-TICKER = {'MORSE':10, 'TEXT':30}
-TIMESPEC = {'DOT_DASH':np.array([0.8, 2, 4]), 'CHARSEP_WORDSEP':np.array([1.5, 4, 10])}
+TICKER = {'MORSE':30, 'TEXT':30}
+TIMESPEC = {'DOT_DASH':np.array([0.8, 2, 4]), 'CHARSEP_WORDSEP':np.array([2, 4, 10])}
 MORSE = {
 ".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D",
 ".": "E",     "..-.": "F",  "--.": "G",   "....": "H",
@@ -32,7 +35,7 @@ class TimingDecoder:
         self.keymoves = {'fall_t': None, 'lift_t': time.time()}
         self.morse_elements = ''
         self.last_lift_t = 0
-        self.ticker = {'ticker': axs[1].text(0, fbin, '*'), 'wpm':16, 'morse':' ' * TICKER['MORSE'], 'text':' ' * TICKER['TEXT']}
+        self.ticker = {'ticker': axs[1].text(0, fbin, '*'), 'wpm':16, 'morse':' ' * TICKER['MORSE'], 'text':' ' * TICKER['TEXT'], 'rendered_text':''}
         self.update_speed(1.2/16)
         threading.Thread(target = self.run, args = (fbin,) ).start()
 
@@ -84,6 +87,15 @@ class TimingDecoder:
         else:
             self.morse_elements = self.morse_elements + el
 
+    def render_ticker(self, text = None, color = 'blue'):
+        if(text is None):
+            text = f"{self.ticker['wpm']:4.1f} {self.ticker['morse']} {self.ticker['text']}"
+        if(self.ticker['rendered_text'] != text):
+            self.ticker['ticker'].set_color(color)
+            self.ticker['ticker'].set_text(text) 
+            self.ticker['rendered_text'] = text
+            return time.time()
+
     def run(self, fbin):
         self.morse_elements = ''
         sigstate = {'up':time.time(), 'down':False, 'new':False}
@@ -97,16 +109,14 @@ class TimingDecoder:
             if(idle):
                 self.process_element('/')
                             
-
-
 def run():
     import matplotlib.pyplot as plt
     from audio import Audio_in
     import time
 
-    audio = Audio_in(df = 50, dt = 0.005, fRng = [400, 600], snr_clip = [18,80])
+    audio = Audio_in(df = 50, dt = 0.005, fRng = [200, 1800], snr_clip = [THRESHOLD_SNR,80])
 
-    refresh_dt = 0.025
+    refresh_dt = 0.05
     nf = audio.params['nf']
  
     fig, axs = plt.subplots(1,2, figsize = (14,5))
@@ -116,17 +126,36 @@ def run():
     axs[0].set_yticks([])
     axs[1].set_axis_off()
 
-    decoders = []
-    for i in range(len(audio.snr)):
-        d = TimingDecoder(axs, audio, i)
-        decoders.append(d)
-
+    decoder_slots = np.array([{'decoder':None, 'last_heard':0} for i in range(nf)])
+    last_decoder_assignment = 0
+    snr_avgs = audio.snr_raw
     while True:
         time.sleep(refresh_dt/2)
+        snr_avgs = snr_avgs*0.9 + 0.1*audio.snr_raw
+        
+        if(time.time() - last_decoder_assignment > 1):
+            last_decoder_assignment = time.time()
+            best_snrs = np.argsort(-snr_avgs)
+            for i in best_snrs[:NDECODERS]:
+                if(snr_avgs[i]>THRESHOLD_SNR):
+                    s = decoder_slots[i]
+                    if s['decoder'] is None:
+                        s['decoder'] = TimingDecoder(axs, audio, i)
+                        s['last_heard'] = time.time()
+
         spec_plot.set_data(audio.display_grid)
         spec_plot.autoscale()
-        for d in decoders:  
-            d.ticker['ticker'].set_text(f"{d.ticker['wpm']:4.1f} {d.ticker['morse']} {d.ticker['text']}") 
-        plt.pause(refresh_dt)
+
+        for s in decoder_slots:
+            if s['decoder'] is not None:
+                color = 'blue' if s['last_heard'] > time.time() - DECODER_MAX_AGE/2 else 'red'
+                last_change = s['decoder'].render_ticker(color = color)
+                if(last_change):
+                    s['last_heard'] = last_change
+                if s['last_heard'] < time.time() - DECODER_MAX_AGE:
+                    s['decoder'].render_ticker(text='')
+                    s['decoder'] = None
+
+        plt.pause(refresh_dt/2)
 
 run()
