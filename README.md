@@ -1,4 +1,5 @@
 # PyMorseLive
-Simple multi-channel timing-based morse decoder
+Simple multi-channel timing-based morse decoder. Not perfect but works and fun to play with!
 
-<img width="1400" height="500" alt="screenshot" src="https://github.com/user-attachments/assets/c02b1718-0179-41ab-8009-b37c32aa073e" />
+https://github.com/user-attachments/assets/5e488738-7636-4507-8d3a-ad95597822c1
+
