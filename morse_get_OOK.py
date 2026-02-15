@@ -1,10 +1,10 @@
-MAX_WPM = 45
-MIN_WPM = 12
-DOT_TOL_FACTS = (0.6, 2)
-DASH_TOL_FACTS = (0.6, 1.4)
-CHARSEP_THRESHOLD = 0.6
-WORDSEP_THRESHOLD = 0.7
+import numpy as np
+import time
+import threading
 
+SPEED = {'MAX':45, 'MIN':12, 'ALPHA':0.3}
+TICKER = {'MORSE':10, 'TEXT':30}
+TIMESPEC = {'DOT_DASH':np.array([0.8, 2, 4]), 'CHARSEP_WORDSEP':np.array([1.5, 4, 10])}
 MORSE = {
 ".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D",
 ".": "E",     "..-.": "F",  "--.": "G",   "....": "H",
@@ -24,102 +24,85 @@ MORSE = {
 
 }
 
-import numpy as np
-        
 class TimingDecoder:
 
     def __init__(self, axs, audio, fbin):
-        import threading
-        self.text_ax = axs[1]
+        
         self.audio = audio
-        self.fbin = fbin
-        self.key_is_now_down = False
-        self.dt = audio.params['dt']
-        self.wpm = 16
-        self.keydown_history = {'buffer':[1.2/self.wpm]*10, 'idx':0}
-        self.check_speed(1.2/self.wpm)
-        self.ticker = False
-        self.ticker_text_blank = [' ']*20
-        self.ticker_text = self.ticker_text_blank
-        self.symbols = ""
-        threading.Thread(target = self.get_symbols).start()
-        self.ticker = self.text_ax.text(0, fbin,'*')
+        self.keymoves = {'fall_t': None, 'lift_t': time.time()}
+        self.morse_elements = ''
+        self.last_lift_t = 0
+        self.ticker = {'ticker': axs[1].text(0, fbin, '*'), 'wpm':16, 'morse':' ' * TICKER['MORSE'], 'text':' ' * TICKER['TEXT']}
+        self.update_speed(1.2/16)
+        threading.Thread(target = self.run, args = (fbin,) ).start()
 
-    def check_element(self, dur):
-        se = self.speed_elements
-        if DOT_TOL_FACTS[0]*se['dot'] < dur < DOT_TOL_FACTS[1]*se['dot']:
-            return '.'
-        if DASH_TOL_FACTS[0]*se['dash'] < dur < DASH_TOL_FACTS[1]*se['dash']:
-            return '-'
+    def update_speed(self, mark_dur):
+        if(1.2/SPEED['MAX'] < mark_dur < 3*1.2/SPEED['MIN']):
+            wpm_new = 1.2/mark_dur if mark_dur < 1.2/SPEED['MIN'] else 3 * 1.2/mark_dur
+            wpm_new = np.clip(wpm_new, SPEED['MIN'], SPEED['MAX'])
+            self.ticker['wpm'] = SPEED['ALPHA'] * wpm_new + (1-SPEED['ALPHA']) * self.ticker['wpm']
+            tu = 1.2/self.ticker['wpm']
+            ts = TIMESPEC
+            self.timespec = {'dot_dash':ts['DOT_DASH']*tu, 'charsep_wordsep':ts['CHARSEP_WORDSEP']*tu}
+
+    def detect_transition(self, level):
+        t = time.time()
+        if(self.keymoves['fall_t'] and level <0.4): # key -> up
+            mark_dur = t - self.keymoves['fall_t']
+            self.keymoves = {'fall_t': False, 'lift_t': t}
+            self.last_lift_t = t
+            return mark_dur, False
+        idle = (t - self.last_lift_t > self.timespec['charsep_wordsep'][2]) and self.morse_elements
+        if(idle):
+            return False, self.timespec['charsep_wordsep'][1]+0.1
+        if(self.keymoves['lift_t'] and level >0.6): # key -> down
+            space_dur = t - self.keymoves['lift_t']
+            self.keymoves = {'fall_t': t, 'lift_t': False}
+            return False, space_dur
+        return False, False
+    
+    def classify_duration(self, mark_dur, space_dur):
+        ts = self.timespec
+        if(mark_dur):
+            self.update_speed(mark_dur)
+            if ts['dot_dash'][0] < mark_dur < ts['dot_dash'][1]:
+                return '.'
+            if ts['dot_dash'][1] < mark_dur < ts['dot_dash'][2]:
+                return '-'
+        elif(space_dur):
+            if ts['charsep_wordsep'][0] < space_dur < ts['charsep_wordsep'][1]:
+                return ' '
+            if ts['charsep_wordsep'][1] < space_dur < ts['charsep_wordsep'][2]:
+                return '/'
         return ''
 
-    def check_speed(self, dd):
-        alpha = 0.3
-        if(dd < 1.2/MAX_WPM or dd > 3*1.2/MIN_WPM):
-            return
-        if(dd < 1.2/MIN_WPM):
-            wpm = 1.2/dd
+    def process_element(self, el):
+        self.ticker['morse'] = (self.ticker['morse'] + el)[-TICKER['MORSE']:]
+        if(el in ['/', ' ']):
+            char = MORSE.get(self.morse_elements, '')
+            self.morse_elements = ''
+            self.ticker['text'] = ( self.ticker['text'] + char + (' ' if el == '/' else '') )[-TICKER['TEXT']:]
         else:
-            wpm = 3*1.2/dd
-        if(wpm > MAX_WPM): wpm = MAX_WPM
-        if(wpm < MIN_WPM): wpm = MIN_WPM
-        self.wpm = alpha * wpm + (1-alpha) * self.wpm
-        tu = 1.2/self.wpm
-        self.speed_elements = {'dot':1*tu, 'dash':3*tu, 'charsep':3*tu, 'wordsep':7*tu}
-            
-    def get_symbols(self):
-        import time
-        t_key_down = False
-        self.t_key_up = time.time()
-        s = ""
-        
-        while(True):
-            time.sleep(self.dt)
+            self.morse_elements = self.morse_elements + el
 
-            # hysteresis
-            level = float(self.audio.snr[self.fbin])
-            if not self.key_is_now_down and level > 0.6:
-                self.key_is_now_down = True
-            elif self.key_is_now_down and level < 0.4:
-                self.key_is_now_down = False
+    def run(self, fbin):
+        self.morse_elements = ''
+        sigstate = {'up':time.time(), 'down':False, 'new':False}
+        while True:
+            time.sleep(self.audio.params['dt'])
+            level = float(self.audio.snr[fbin])
+            mark, space = self.detect_transition(level)
+            if mark or space:
+                el = self.classify_duration(mark, space)
+                self.process_element(el)            
 
-            # key_down to key_up transition
-            if t_key_down and not self.key_is_now_down:
-                self.t_key_up = time.time()
-                down_dur = self.t_key_up - t_key_down
-                t_key_down = False
-                self.check_speed(down_dur)
-                s = s + self.check_element(down_dur)
-
-            # watch key_up dur for inter-character and inter-word gaps
-            if self.t_key_up:
-                key_up_dur = time.time() - self.t_key_up
-                if key_up_dur > CHARSEP_THRESHOLD * self.speed_elements['charsep']:
-                    if(len(s)):
-                        self.ticker_text = self.ticker_text[-20:]
-                        ch = MORSE.get(s, "*")
-                        s = ""
-                        self.ticker_text.append(ch)
-                        tkrstr = ''.join(self.ticker_text)
-                        for pat in [' E E', 'E E ', ' E ', ' T ', ' IE ', 'EEE', 'EIE']:
-                            tkrstr = tkrstr.replace(pat,'')
-                        self.ticker.set_text(f"{self.wpm:4.1f} {tkrstr}")                        
-                if key_up_dur > WORDSEP_THRESHOLD * self.speed_elements['wordsep']:
-                    if(len(self.ticker_text)):
-                        if(self.ticker_text[-1] != " "):
-                            self.ticker_text.append(" ")
-
-            # key_up to key_down transition
-            if(self.t_key_up and self.key_is_now_down):
-                t_key_down = time.time()
-                self.t_key_up = False
 
 def run():
     import matplotlib.pyplot as plt
     from audio import Audio_in
     import time
 
-    audio = Audio_in(df = 50, dt = 0.005, fRng = [200, 1400], snr_clip = [18,80])
+    audio = Audio_in(df = 50, dt = 0.005, fRng = [400, 600], snr_clip = [18,80])
 
     refresh_dt = 0.025
     nf = audio.params['nf']
@@ -140,6 +123,8 @@ def run():
         time.sleep(refresh_dt/2)
         spec_plot.set_data(audio.display_grid)
         spec_plot.autoscale()
+        for d in decoders:  
+            d.ticker['ticker'].set_text(f"{d.ticker['wpm']:4.1f} {d.ticker['morse']} {d.ticker['text']}") 
         plt.pause(refresh_dt)
 
 run()
