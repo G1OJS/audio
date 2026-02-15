@@ -3,11 +3,11 @@ import time
 import threading
 
 NDECODERS = 3
-DECODER_MAX_AGE = 30
-THRESHOLD_SNR = 30
+DECODER_MAX_AGE = 15
+THRESHOLD_SNR, MAX_SNR = 10, 100
 SPEED = {'MAX':45, 'MIN':12, 'ALPHA':0.3}
 TICKER = {'MORSE':30, 'TEXT':30}
-TIMESPEC = {'DOT_SHORT':0.8, 'DOT_LONG':2, 'CHARSEP_SHORT':2, 'CHARSEP_LONG':5, 'WORDSEP':10}
+TIMESPEC = {'DOT_SHORT':0.8, 'DOT_LONG':2, 'CHARSEP_SHORT':1.5, 'CHARSEP_LONG':4, 'WORDSEP':6.5}
 MORSE = {
 ".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D",
 ".": "E",     "..-.": "F",  "--.": "G",   "....": "H",
@@ -23,7 +23,8 @@ MORSE = {
 
 "-..-.": "/", "..--": "Ü",
 
-".-.-.": "_AR_", "..--..": "?", "-...-": "_BK_", "...-.-": "_SK_", "..-.-.": "_UR_"
+".-.-.": "_AR_", "..--..": "?", "-...-": "_BK_",
+"...-.-": "_SK_", "..-.-.": "_UR_", "-.--.": "_KN_"
 
 }
 
@@ -116,9 +117,9 @@ def run():
     from audio import Audio_in
     import time
 
-    audio = Audio_in(df = 50, dt = 0.005, fRng = [200, 1800], snr_clip = [THRESHOLD_SNR,80])
+    audio = Audio_in(df = 20, dt = 0.005, dur = 2,  fRng = [450, 750], snr_clip = [THRESHOLD_SNR, MAX_SNR])
 
-    refresh_dt = 0.05
+    refresh_dt = 0.1
     nf = audio.params['nf']
  
     fig, axs = plt.subplots(1,2, figsize = (14,5))
