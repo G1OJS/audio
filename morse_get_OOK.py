@@ -51,15 +51,14 @@ class TimingDecoder:
             mark_dur = t - self.keymoves['fall_t']
             self.keymoves = {'fall_t': False, 'lift_t': t}
             self.last_lift_t = t
-            return mark_dur, False
-        idle = (t - self.last_lift_t > self.timespec['charsep_wordsep'][2]) and self.morse_elements
-        if(idle):
-            return False, self.timespec['charsep_wordsep'][1]+0.1
+            return mark_dur, False, False 
+        if (t - self.last_lift_t > self.timespec['charsep_wordsep'][2]) and self.morse_elements:
+            return False, False, True
         if(self.keymoves['lift_t'] and level >0.6): # key -> down
             space_dur = t - self.keymoves['lift_t']
             self.keymoves = {'fall_t': t, 'lift_t': False}
-            return False, space_dur
-        return False, False
+            return False, space_dur, False
+        return False, False, False
     
     def classify_duration(self, mark_dur, space_dur):
         ts = self.timespec
@@ -91,10 +90,13 @@ class TimingDecoder:
         while True:
             time.sleep(self.audio.params['dt'])
             level = float(self.audio.snr[fbin])
-            mark, space = self.detect_transition(level)
+            mark, space, idle = self.detect_transition(level)
             if mark or space:
                 el = self.classify_duration(mark, space)
-                self.process_element(el)            
+                self.process_element(el)
+            if(idle):
+                self.process_element('/')
+                            
 
 
 def run():
