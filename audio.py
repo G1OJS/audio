@@ -76,7 +76,7 @@ class Audio_in:
         snr_clip = self.snr_clip
         self._pgrid[:, i] = pwr
         self.snr = np.clip(self.snr_raw, snr_clip[0],snr_clip[1]) / snr_clip[1]
-        self.display_grid = np.roll(self._pgrid, -i, axis = 1)        
+        self.display_grid = np.roll(self._pgrid, -i, axis = 1)
         self.grid_idx = (i + 1) % self._pgrid.shape[1]
 
 # testing code
