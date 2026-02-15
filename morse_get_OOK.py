@@ -7,7 +7,7 @@ DECODER_MAX_AGE = 30
 THRESHOLD_SNR = 30
 SPEED = {'MAX':45, 'MIN':12, 'ALPHA':0.3}
 TICKER = {'MORSE':30, 'TEXT':30}
-TIMESPEC = {'DOT_DASH':np.array([0.8, 2, 4]), 'CHARSEP_WORDSEP':np.array([2, 4, 10])}
+TIMESPEC = {'DOT_SHORT':0.8, 'DOT_LONG':2, 'CHARSEP_SHORT':2, 'CHARSEP_LONG':5, 'WORDSEP':10}
 MORSE = {
 ".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D",
 ".": "E",     "..-.": "F",  "--.": "G",   "....": "H",
@@ -30,12 +30,11 @@ MORSE = {
 class TimingDecoder:
 
     def __init__(self, axs, audio, fbin):
-        
         self.audio = audio
         self.keymoves = {'fall_t': None, 'lift_t': time.time()}
         self.morse_elements = ''
         self.last_lift_t = 0
-        self.ticker = {'ticker': axs[1].text(0, fbin, '*'), 'wpm':16, 'morse':' ' * TICKER['MORSE'], 'text':' ' * TICKER['TEXT'], 'rendered_text':''}
+        self.ticker = {'ticker': axs[1].text(-0.15, fbin, '*'), 'wpm':16, 'morse':' ' * TICKER['MORSE'], 'text':' ' * TICKER['TEXT'], 'rendered_text':''}
         self.update_speed(1.2/16)
         threading.Thread(target = self.run, args = (fbin,) ).start()
 
@@ -46,36 +45,41 @@ class TimingDecoder:
             self.ticker['wpm'] = SPEED['ALPHA'] * wpm_new + (1-SPEED['ALPHA']) * self.ticker['wpm']
             tu = 1.2/self.ticker['wpm']
             ts = TIMESPEC
-            self.timespec = {'dot_dash':ts['DOT_DASH']*tu, 'charsep_wordsep':ts['CHARSEP_WORDSEP']*tu}
+            self.timespec = {'dot_short':ts['DOT_SHORT']*tu, 'dot_long':ts['DOT_LONG']*tu,
+                             'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_long':ts['CHARSEP_LONG']*tu, 'wordsep':ts['WORDSEP']*tu, }
 
     def detect_transition(self, level):
         t = time.time()
+        
         if(self.keymoves['fall_t'] and level <0.4): # key -> up
             mark_dur = t - self.keymoves['fall_t']
             self.keymoves = {'fall_t': False, 'lift_t': t}
             self.last_lift_t = t
-            return mark_dur, False, False 
-        if (t - self.last_lift_t > self.timespec['charsep_wordsep'][2]) and self.morse_elements:
+            return mark_dur, False, False
+        
+        if (t - self.last_lift_t > self.timespec['wordsep']) and self.morse_elements:
             return False, False, True
+        
         if(self.keymoves['lift_t'] and level >0.6): # key -> down
             space_dur = t - self.keymoves['lift_t']
             self.keymoves = {'fall_t': t, 'lift_t': False}
             return False, space_dur, False
+        
         return False, False, False
     
-    def classify_duration(self, mark_dur, space_dur):
+    def classify_duration(self, mark_dur, space_dur, idle):
         ts = self.timespec
-        if(mark_dur):
+        wordsep_char = ''
+        if(self.morse_elements):
+            if self.morse_elements[-1] != '/':
+                wordsep_char = '/'
+        if(idle):
+            return wordsep_char
+        elif(mark_dur > ts['dot_short']):
             self.update_speed(mark_dur)
-            if ts['dot_dash'][0] < mark_dur < ts['dot_dash'][1]:
-                return '.'
-            if ts['dot_dash'][1] < mark_dur < ts['dot_dash'][2]:
-                return '-'
-        elif(space_dur):
-            if ts['charsep_wordsep'][0] < space_dur < ts['charsep_wordsep'][1]:
-                return ' '
-            if ts['charsep_wordsep'][1] < space_dur < ts['charsep_wordsep'][2]:
-                return '/'
+            return '.' if mark_dur < ts['dot_long'] else '-'
+        elif(space_dur > ts['charsep_short']):
+            return ' ' if space_dur < ts['charsep_long'] else wordsep_char
         return ''
 
     def process_element(self, el):
@@ -89,7 +93,7 @@ class TimingDecoder:
 
     def render_ticker(self, text = None, color = 'blue'):
         if(text is None):
-            text = f"{self.ticker['wpm']:4.1f} {self.ticker['morse']} {self.ticker['text']}"
+            text = f"{self.ticker['wpm']:4.1f}   {self.ticker['morse']}  {self.ticker['text'].strip()}"
         if(self.ticker['rendered_text'] != text):
             self.ticker['ticker'].set_color(color)
             self.ticker['ticker'].set_text(text) 
@@ -103,11 +107,9 @@ class TimingDecoder:
             time.sleep(self.audio.params['dt'])
             level = float(self.audio.snr[fbin])
             mark, space, idle = self.detect_transition(level)
-            if mark or space:
-                el = self.classify_duration(mark, space)
+            if any([mark, space, idle]):
+                el = self.classify_duration(mark, space, idle)
                 self.process_element(el)
-            if(idle):
-                self.process_element('/')
                             
 def run():
     import matplotlib.pyplot as plt
