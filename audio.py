@@ -61,6 +61,7 @@ class Audio_in:
         ns = len(samples)
         self.audiobuff[:-ns] = self.audiobuff[ns:]
         self.audiobuff[-ns:] = samples
+        self.calc_spectrum()
         return (None, pyaudio.paContinue)
 
     def calc_spectrum(self):

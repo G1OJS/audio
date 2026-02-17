@@ -6,7 +6,7 @@ from matplotlib.animation import FuncAnimation
 from audio import Audio_in
 
 NDECODERS = 3
-SHOW_KEYLINES = False
+SHOW_KEYLINES = True
 SPEED = {'MAX':45, 'MIN':12, 'ALPHA':0.1}
 TICKER_FIELD_LENGTHS = {'MORSE':30, 'TEXT':30}
 TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':1.5, 'CHARSEP_LONG':4, 'WORDSEP':6.5}
@@ -37,8 +37,6 @@ MORSE = {
 class TimingDecoder:
 
     def __init__(self, fbin):
-        self.ticker = None
-        self.keyline = None
         self.keypos = 0
         self.fbin = fbin
         self.level_hist = np.zeros(10)
@@ -117,111 +115,88 @@ class TimingDecoder:
                 self.update_speed(mark_dur)
             self.process_element(el)
 
-class Display:
-    def __init__(self, audio, decoders):
-        self.display_nt = int(DISPLAY_DUR / DISPLAY_DT)
-        self.display_timevals = np.linspace(0, DISPLAY_DUR, self.display_nt)
-        self.waterfall = np.zeros((audio.params['nf'], self.display_nt))
-        self.waterfall_idx = 0
-        threading.Thread(target = self.display_calculator, args = (audio, decoders, audio.params['dt'])).start()
-        self.run_display(audio, decoders)
-        
-    def display_calculator(self, audio, decoders, calc_dt):
-        while True:
-            time.sleep(calc_dt)
-            self.waterfall = np.roll(self.waterfall, -1, axis =1)
-            self.waterfall[:, -1]  = audio.pwr/(1+np.max(audio.pwr))
-            if(SHOW_KEYLINES):
-                for i, fbin in enumerate(decoders):
-                    keylines[i]['data'][-1] = 0.2 + 0.8*decoders[fbin].keypos + fbin
-                    keylines[i]['data'][:-1] = keylines[i]['data'][1:]
+class UI_decoder:
+    def __init__(self, axs, fbin, timevals):
+        self.fbin = fbin
+        self.decoder = TimingDecoder(fbin)
+        self.ticker = axs[1].text(-0.15, fbin, '*')
+        kld = np.zeros_like(timevals)
+        self.keyline = {'data':kld, 'line':axs[0].plot(timevals, kld, color = 'black')[0]}
 
-    def render_ticker(self, ticker, ticker_dict, text = None, color = 'blue'):
-        if(text is None):
-            text = f"{ticker_dict['wpm']:4.1f}   {ticker_dict['morse']}  {ticker_dict['text'].strip()}"
-        if(ticker_dict['rendered_text'] != text):
-            ticker.set_color(color)
-            ticker.set_text(text) 
-            ticker_dict['rendered_text'] = text
-            return time.time()
-            
-    def run_display(self, audio, decoders):
+    def remove_elements(self):
+        self.ticker.set_text(' ' * len(self.decoder.ticker_dict['rendered_text']))
+        try:
+            self.ticker.remove()
+        except:
+            pass
+        try:
+            self.keyline['line'].remove()
+        except:
+            pass
+    
+
+class App:
+    def __init__(self):
+        self.decoders = {}
+        self.audio = Audio_in(df = 80, dt = 0.02,  fRng = [200, 1500])
+        self.siglevels = np.zeros(self.audio.params['nf'])
+        self.display_nt = int(DISPLAY_DUR / DISPLAY_DT)
+        self.timevals = np.linspace(0, DISPLAY_DUR, self.display_nt)
+        self.animate(DISPLAY_DT*1000, DISPLAY_DUR)
+
+    def animate(self, frame_ms, display_duration):
         fig, axs = plt.subplots(1,2, figsize = (14,2))
-        spec_plot = axs[0].imshow(self.waterfall, origin = 'lower', aspect='auto', alpha = 1, 
-                                  interpolation = 'none', extent=[0, DISPLAY_DUR, 0, audio.params['nf']])
-        axs[1].set_ylim(axs[0].get_ylim())
+        axs[1].set_ylim(0, self.audio.params['nf'])
         axs[0].set_xticks([])
         axs[0].set_yticks([])
         axs[1].set_axis_off()
+        
+        waterfall = np.zeros((self.audio.params['nf'], self.display_nt))
+        spec_plot = axs[0].imshow(waterfall, origin = 'lower', aspect='auto', alpha = 1, 
+                                      interpolation = 'none', extent=[0, display_duration, 0, self.audio.params['nf']])
+        def refresh(i):
+            nonlocal waterfall, spec_plot, axs
+            if(i % 10 == 0):
+                self.siglevels = np.maximum(self.siglevels * 0.9, self.audio.pwr)
+                fbins_to_cover = np.argsort(-self.siglevels)[:NDECODERS]
+                for fbin in fbins_to_cover:
+                    if fbin not in self.decoders:
+                        self.decoders[fbin] = UI_decoder(axs, fbin, self.timevals)
+                decoders_to_remove = [d for d in self.decoders.values() if d.fbin not in fbins_to_cover]
+                for d in decoders_to_remove:
+                    d.remove_elements()
+                    
+            for fbin in self.decoders:
+                self.decoders[fbin].decoder.step(self.audio.pwr[fbin])
 
-        self.tickers_updated = time.time()
-        def update(i):
-            idx = self.waterfall_idx
-            spec_plot.set_array(self.waterfall)
+            waterfall = np.roll(waterfall, -1, axis =1)
+            waterfall[:, -1]  = self.audio.pwr/(1+np.max(self.audio.pwr))
+            spec_plot.set_array(waterfall)
+            spec_plot.autoscale()
             
             if(SHOW_KEYLINES):
-                for i, fbin in enumerate(decoders):
-                    keylines[i]['line'].set_ydata(keylines[i]['data'])
+                for fbin in self.decoders:
+                    d = self.decoders[fbin]                
+                    d.keyline['data'][-1] = 0.2 + 0.6 * d.decoder.keypos + fbin
+                    d.keyline['data'][:-1] = d.keyline['data'][1:]
+                    d.keyline['line'].set_ydata(d.keyline['data'])
 
-            self.tickers_updated = time.time()
-            for fbin in decoders:
-                d = decoders[fbin]
+            for fbin in self.decoders:
+                d = self.decoders[fbin]
                 if(d is not None):
-                    self.render_ticker(d.ticker, d.ticker_dict)
-            return None         
+                    td = d.decoder.ticker_dict
+                    text = f"{td['wpm']:4.1f}   {td['morse']}  {td['text'].strip()}"
+                    if(td['rendered_text'] != text):
+                        d.ticker.set_text(text) 
+                        td['rendered_text'] = text
+ 
 
-        ani = FuncAnimation(plt.gcf(), update, interval = DISPLAY_DT*1000, frames=range(100000), blit=False)
-
+            return None
+        
+        ani = FuncAnimation(plt.gcf(), refresh, interval = frame_ms, frames=range(100000), blit=False)
         plt.show()
         
-
-class App_manager:
-    def __init__(self):
-        self.audio = Audio_in(df = 80, dt = 0.02,  fRng = [200, 1500])
-        self.siglevels = np.zeros(self.audio.params['nf'])
-        self.decoders = {}
-        threading.Thread(target = self.run).start()
-        self.display = Display(self.audio, self.decoders)
-
-    def remove_decoder(self, fbin):
-        d = self.decoders[fbin]
-        if (d is not None):
-            if(d.ticker is not None):
-                d.ticker.set_text(' ' * len(d.ticker_dict['rendered_text']))
-            #self.display.clear_keyline(fbin)
-            del self.decoders[fbin]
-
-    def manage_decoders(self):
-        self.siglevels = np.maximum(self.siglevels * 0.999, self.audio.pwr)
-        fbins_to_cover = np.argsort(-self.siglevels)[:NDECODERS]
-        for fbin in fbins_to_cover:
-            if fbin not in self.decoders:
-                d = TimingDecoder(fbin)
-                d.ticker = self.display.axs[1].text(-0.15, fbin, '*')
-             #   kld = np.zeros_like(self.display_timevals)
-             #   d.keyline = {'data':kld, 'line':axs[0].plot(self.display_timevals,kld)[0]}
-                self.decoders[fbin] = d
-        decoders_to_remove = [d for d in self.decoders.values() if d.fbin not in fbins_to_cover]
-        for d in decoders_to_remove:
-            self.remove_decoder(d.fbin)
-        for fbin in self.decoders:
-            self.decoders[fbin].step(self.audio.pwr[fbin])
-
-
-    def run(self):
-        dt = self.audio.params['dt']
-        while True:
-            t0 = time.time()
-            self.audio.calc_spectrum()
-            self.manage_decoders()
-            elapsed = time.time() - t0
-            time.sleep(max(0, dt - elapsed))
-
-
-app = App_manager()
-
-
-
+app = App()
 
 
 
