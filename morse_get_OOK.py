@@ -10,7 +10,7 @@ NDECODERS = 3
 SHOW_KEYLINES = True
 SPEED = {'MAX':45, 'MIN':12, 'ALPHA':0.05}
 TICKER_FIELD_LENGTHS = {'MORSE':30, 'TEXT':30}
-TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':1.5, 'CHARSEP_LONG':4, 'WORDSEP':6.5}
+TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2.5, 'CHARSEP_WORDSEP':6, 'TIMEOUT':7.5}
 AUDIO_REFRESH_DT = 0.02
 AUDIO_RES= 80
 DISPLAY_REFRESH_DT = .08
@@ -59,22 +59,22 @@ class TimingDecoder:
             tu = 1.2/self.ticker_dict['wpm']
             ts = TIMESPEC
             self.timespec = {'dot_short':ts['DOT_SHORT']*tu, 'dot_long':ts['DOT_LONG']*tu,
-                             'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_long':ts['CHARSEP_LONG']*tu, 'wordsep':ts['WORDSEP']*tu, }
+                             'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_wordsep':ts['CHARSEP_WORDSEP']*tu, 'timeout':ts['TIMEOUT']*tu, }
 
     def detect_transition(self, sig):
         t = time.time()
         
-        if(self.keymoves['press_t'] and sig < 0.4): # key -> up
+        if(self.keymoves['press_t'] and sig < 0.5): # key -> up
             mark_dur = t - self.keymoves['press_t']
             self.keymoves = {'press_t': False, 'lift_t': t}
             self.last_lift_t = t
             self.keypos = 0
             return mark_dur, False, False
         
-        if (t - self.last_lift_t > self.timespec['wordsep']) and self.morse_elements:
+        if (t - self.last_lift_t > self.timespec['timeout']) and self.morse_elements:
             return False, False, True
         
-        if(self.keymoves['lift_t'] and sig > 0.6): # key -> down
+        if(self.keymoves['lift_t'] and sig > 0.8): # key -> down
             space_dur = t - self.keymoves['lift_t']
             self.keymoves = {'press_t': t, 'lift_t': False}
             self.keypos = 1
@@ -93,7 +93,7 @@ class TimingDecoder:
         elif(mark_dur > ts['dot_short']):
             return '.' if mark_dur < ts['dot_long'] else '-'
         elif(space_dur > ts['charsep_short']):
-            return ' ' if space_dur < ts['charsep_long'] else wordsep_char
+            return ' ' if space_dur < ts['charsep_wordsep'] else wordsep_char
         return ''
 
     def process_element(self, el):
