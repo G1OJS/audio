@@ -1,35 +1,33 @@
 import numpy as np
 import pyaudio
 import time
+import threading
 
 CABLE = ['CABLE', 'Out']
 RIG = ['Min', 'CODEC']
     
 class Audio_in:
     
-    def __init__(self, device_keywords = RIG, dur = 0.5, df = 10, dt = 0.01, fft_len = 256, fRng = [300,800], snr_clip = [0,70]):
+    def __init__(self, device_keywords = RIG, df = 10, dt = 0.01, fft_len = 256, fRng = [300,800], snr_clip_limits = [0,70]):
         dt_req = dt
         fft_out_len = fft_len //2 + 1
         fmax = fft_out_len * df
-        if(fmax < fRng[0]): fRng[0] = fmax
-        if(fmax < fRng[1]): fRng[1] = fmax
+        fRng = np.clip(fRng, None, fmax)
         sample_rate = int(fft_len * df)
         dt1 = fft_len/sample_rate
-        hops_per_fft = int(dt1/dt_req)
+        hops_per_fft = np.max([int(dt1/dt_req),1])
         dt = dt1/hops_per_fft
         self.frames_perbuff = fft_len // hops_per_fft
         self.audiobuff = np.zeros(fft_len, dtype=np.float32)
 
-        self.snr_clip = snr_clip
-        binRng = [int(fRng[0]/df), int(fRng[1]/df) - 1]
-        fRng = [binRng[0] * df, binRng[1] * df]
-        nf, nt = 1+binRng[1]-binRng[0], int(dur / dt)
-        self.params = {'dur':dur, 'dt':dt, 'nf':nf, 'nt':nt, 'dt_wpm': int(12/dt)/10, 'hpf': hops_per_fft, 'df':df, 'sr':sample_rate, 'fmax':fmax, 'fRng':fRng, 'binRng': binRng}
+        self.snr_clip_limits = snr_clip_limits
+        self.fBins = range(int(fRng[0]/df), int(fRng[1]/df) - 1)
+        fRng = [self.fBins[0] * df, self.fBins[-1] * df]
+        nf = len(self.fBins)
+        self.params = {'dt':dt, 'nf':nf, 'dt_wpm': int(12/dt)/10, 'hpf': hops_per_fft,
+                       'df':df, 'sr':sample_rate, 'fmax':fmax, 'fRng':fRng}
 
-        self._pgrid = np.ones((nf, nt))
-        self.display_grid = np.zeros_like(self._pgrid)
-        self.snr = np.zeros(nf)
-        self.grid_idx = 0
+        self.pwr = np.ones(nf)
         self.pya = pyaudio.PyAudio()
         self.input_device_idx = self.find_device(device_keywords)
         self.window = np.hanning(fft_len)
@@ -63,42 +61,13 @@ class Audio_in:
         ns = len(samples)
         self.audiobuff[:-ns] = self.audiobuff[ns:]
         self.audiobuff[-ns:] = samples
-        self.calc_spectrum()
         return (None, pyaudio.paContinue)
 
     def calc_spectrum(self):
-        z = np.fft.rfft(self.audiobuff * self.window)[self.params['binRng'][0]:self.params['binRng'][1]+1]
-        pwr = (z.real*z.real + z.imag*z.imag)
-        noise = np.percentile(self._pgrid, 20,  axis = 1)
-        self.snr_raw = pwr / noise
-        
-        i = self.grid_idx
-        snr_clip = self.snr_clip
-        self._pgrid[:, i] = pwr
-        self.snr = np.clip(self.snr_raw, snr_clip[0],snr_clip[1]) / snr_clip[1]
-        self.display_grid = np.roll(self._pgrid, -i, axis = 1)
-        self.grid_idx = (i + 1) % self._pgrid.shape[1]
+        z = np.fft.rfft(self.audiobuff * self.window)[self.fBins]
+        self.pwr = (z.real*z.real + z.imag*z.imag)
+            
 
 # testing code
 if __name__ == "__main__":
-
-    def test():
-        import matplotlib.pyplot as plt
-        fig, axs = plt.subplots(1,2, figsize = (14,5))
-        audio = Audio_in(dur = 1, dt = 0.005, df = 50, snr_clip = [25,100])
-        refresh_dt = 0.025
-        dur = 2
-        binRng = audio.params['binRng']
-        waterfall = np.zeros((1 + binRng[1] - binRng[0], int(dur/refresh_dt)))
-        spec_plot = axs[0].imshow(waterfall, origin = 'lower', aspect='auto', interpolation = 'none')
-        axs[0].set_xticks([])
-        axs[0].set_yticks([])
-        axs[1].set_axis_off()
-
-        while True:
-            time.sleep(refresh_dt/2)
-            spec_plot.set_data(audio.display_grid)
-            spec_plot.autoscale()
-            plt.pause(refresh_dt)
-
-    test()
+    pass

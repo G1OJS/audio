@@ -1,13 +1,17 @@
 import numpy as np
 import time
 import threading
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from audio import Audio_in
 
 NDECODERS = 3
-DECODER_MAX_AGE = 15
-THRESHOLD_SNR, MAX_SNR = 10, 100
-SPEED = {'MAX':45, 'MIN':12, 'ALPHA':0.3}
-TICKER = {'MORSE':30, 'TEXT':30}
-TIMESPEC = {'DOT_SHORT':0.8, 'DOT_LONG':2, 'CHARSEP_SHORT':1.5, 'CHARSEP_LONG':4, 'WORDSEP':6.5}
+SHOW_KEYLINES = False
+SPEED = {'MAX':45, 'MIN':12, 'ALPHA':0.1}
+TICKER_FIELD_LENGTHS = {'MORSE':30, 'TEXT':30}
+TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':1.5, 'CHARSEP_LONG':4, 'WORDSEP':6.5}
+DISPLAY_DT = 0.01
+DISPLAY_DUR = 2
 MORSE = {
 ".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D",
 ".": "E",     "..-.": "F",  "--.": "G",   "....": "H",
@@ -28,42 +32,52 @@ MORSE = {
 
 }
 
+
+
 class TimingDecoder:
 
-    def __init__(self, axs, audio, fbin):
-        self.audio = audio
-        self.keymoves = {'fall_t': None, 'lift_t': time.time()}
+    def __init__(self, fbin):
+        self.ticker = None
+        self.keyline = None
+        self.keypos = 0
+        self.fbin = fbin
+        self.level_hist = np.zeros(10)
+        self.keymoves = {'press_t': None, 'lift_t': time.time()}
         self.morse_elements = ''
         self.last_lift_t = 0
-        self.ticker = {'ticker': axs[1].text(-0.15, fbin, '*'), 'wpm':16, 'morse':' ' * TICKER['MORSE'], 'text':' ' * TICKER['TEXT'], 'rendered_text':''}
+        self.ticker_dict = {'wpm':16, 'morse':' ' * TICKER_FIELD_LENGTHS['MORSE'], 'text':' ' * TICKER_FIELD_LENGTHS['TEXT'], 'rendered_text':''}
         self.update_speed(1.2/16)
-        threading.Thread(target = self.run, args = (fbin,) ).start()
-
+        self.noise = 0
+        self.decaying_min = 0
+        self.decaying_max = 1
+        
     def update_speed(self, mark_dur):
         if(1.2/SPEED['MAX'] < mark_dur < 3*1.2/SPEED['MIN']):
             wpm_new = 1.2/mark_dur if mark_dur < 1.2/SPEED['MIN'] else 3 * 1.2/mark_dur
             wpm_new = np.clip(wpm_new, SPEED['MIN'], SPEED['MAX'])
-            self.ticker['wpm'] = SPEED['ALPHA'] * wpm_new + (1-SPEED['ALPHA']) * self.ticker['wpm']
-            tu = 1.2/self.ticker['wpm']
+            self.ticker_dict['wpm'] = SPEED['ALPHA'] * wpm_new + (1-SPEED['ALPHA']) * self.ticker_dict['wpm']
+            tu = 1.2/self.ticker_dict['wpm']
             ts = TIMESPEC
             self.timespec = {'dot_short':ts['DOT_SHORT']*tu, 'dot_long':ts['DOT_LONG']*tu,
                              'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_long':ts['CHARSEP_LONG']*tu, 'wordsep':ts['WORDSEP']*tu, }
 
-    def detect_transition(self, level):
+    def detect_transition(self, sig):
         t = time.time()
         
-        if(self.keymoves['fall_t'] and level <0.4): # key -> up
-            mark_dur = t - self.keymoves['fall_t']
-            self.keymoves = {'fall_t': False, 'lift_t': t}
+        if(self.keymoves['press_t'] and sig < 0.4): # key -> up
+            mark_dur = t - self.keymoves['press_t']
+            self.keymoves = {'press_t': False, 'lift_t': t}
             self.last_lift_t = t
+            self.keypos = 0
             return mark_dur, False, False
         
         if (t - self.last_lift_t > self.timespec['wordsep']) and self.morse_elements:
             return False, False, True
         
-        if(self.keymoves['lift_t'] and level >0.6): # key -> down
+        if(self.keymoves['lift_t'] and sig > 0.6): # key -> down
             space_dur = t - self.keymoves['lift_t']
-            self.keymoves = {'fall_t': t, 'lift_t': False}
+            self.keymoves = {'press_t': t, 'lift_t': False}
+            self.keypos = 1
             return False, space_dur, False
         
         return False, False, False
@@ -77,88 +91,141 @@ class TimingDecoder:
         if(idle):
             return wordsep_char
         elif(mark_dur > ts['dot_short']):
-            self.update_speed(mark_dur)
             return '.' if mark_dur < ts['dot_long'] else '-'
         elif(space_dur > ts['charsep_short']):
             return ' ' if space_dur < ts['charsep_long'] else wordsep_char
         return ''
 
     def process_element(self, el):
-        self.ticker['morse'] = (self.ticker['morse'] + el)[-TICKER['MORSE']:]
+        self.ticker_dict['morse'] = (self.ticker_dict['morse'] + el)[-TICKER_FIELD_LENGTHS['MORSE']:]
         if(el in ['/', ' ']):
             char = MORSE.get(self.morse_elements, '')
             self.morse_elements = ''
-            self.ticker['text'] = ( self.ticker['text'] + char + (' ' if el == '/' else '') )[-TICKER['TEXT']:]
+            self.ticker_dict['text'] = ( self.ticker_dict['text'] + char + (' ' if el == '/' else '') )[-TICKER_FIELD_LENGTHS['TEXT']:]
         else:
             self.morse_elements = self.morse_elements + el
+                
+    def step(self, pwr):
+       # self.decaying_min = max(self.noise, 0.95*self.decaying_min)
+        self.decaying_max = max(pwr, 0.95*self.decaying_max)
+        sig = pwr / self.decaying_max
+        self.noise = min(self.noise, pwr)
+        mark_dur, space_dur, is_idle = self.detect_transition(sig)
+        if any([mark_dur, space_dur, is_idle]):
+            el = self.classify_duration(mark_dur, space_dur, is_idle)
+            if(mark_dur):
+                self.update_speed(mark_dur)
+            self.process_element(el)
 
-    def render_ticker(self, text = None, color = 'blue'):
-        if(text is None):
-            text = f"{self.ticker['wpm']:4.1f}   {self.ticker['morse']}  {self.ticker['text'].strip()}"
-        if(self.ticker['rendered_text'] != text):
-            self.ticker['ticker'].set_color(color)
-            self.ticker['ticker'].set_text(text) 
-            self.ticker['rendered_text'] = text
-            return time.time()
-
-    def run(self, fbin):
-        self.morse_elements = ''
-        sigstate = {'up':time.time(), 'down':False, 'new':False}
-        while True:
-            time.sleep(self.audio.params['dt'])
-            level = float(self.audio.snr[fbin])
-            mark, space, idle = self.detect_transition(level)
-            if any([mark, space, idle]):
-                el = self.classify_duration(mark, space, idle)
-                self.process_element(el)
-                            
-def run():
-    import matplotlib.pyplot as plt
-    from audio import Audio_in
-    import time
-
-    audio = Audio_in(df = 20, dt = 0.01, dur = 2,  fRng = [450, 750], snr_clip = [THRESHOLD_SNR, MAX_SNR])
-
-    refresh_dt = 0.1
-    nf = audio.params['nf']
- 
-    fig, axs = plt.subplots(1,2, figsize = (14,5))
-    spec_plot = axs[0].imshow(audio.display_grid, origin = 'lower', aspect='auto', interpolation = 'none')
-    axs[1].set_ylim(axs[0].get_ylim())
-    axs[0].set_xticks([])
-    axs[0].set_yticks([])
-    axs[1].set_axis_off()
-
-    decoder_slots = np.array([{'decoder':None, 'last_heard':0} for i in range(nf)])
-    last_decoder_assignment = 0
-    snr_avgs = audio.snr_raw
-    while True:
-        time.sleep(refresh_dt/2)
-        snr_avgs = snr_avgs*0.9 + 0.1*audio.snr_raw
+class Display:
+    def __init__(self, audio, decoders):
+        self.display_nt = int(DISPLAY_DUR / DISPLAY_DT)
+        self.display_timevals = np.linspace(0, DISPLAY_DUR, self.display_nt)
+        self.waterfall = np.zeros((audio.params['nf'], self.display_nt))
+        self.waterfall_idx = 0
+        threading.Thread(target = self.display_calculator, args = (audio, decoders, audio.params['dt'])).start()
+        self.run_display(audio, decoders)
         
-        if(time.time() - last_decoder_assignment > 1):
-            last_decoder_assignment = time.time()
-            best_snrs = np.argsort(-snr_avgs)
-            for i in best_snrs[:NDECODERS]:
-                if(snr_avgs[i]>THRESHOLD_SNR):
-                    s = decoder_slots[i]
-                    if s['decoder'] is None:
-                        s['decoder'] = TimingDecoder(axs, audio, i)
-                        s['last_heard'] = time.time()
+    def display_calculator(self, audio, decoders, calc_dt):
+        while True:
+            time.sleep(calc_dt)
+            self.waterfall = np.roll(self.waterfall, -1, axis =1)
+            self.waterfall[:, -1]  = audio.pwr/(1+np.max(audio.pwr))
+            if(SHOW_KEYLINES):
+                for i, fbin in enumerate(decoders):
+                    keylines[i]['data'][-1] = 0.2 + 0.8*decoders[fbin].keypos + fbin
+                    keylines[i]['data'][:-1] = keylines[i]['data'][1:]
 
-        spec_plot.set_data(audio.display_grid)
-        spec_plot.autoscale()
+    def render_ticker(self, ticker, ticker_dict, text = None, color = 'blue'):
+        if(text is None):
+            text = f"{ticker_dict['wpm']:4.1f}   {ticker_dict['morse']}  {ticker_dict['text'].strip()}"
+        if(ticker_dict['rendered_text'] != text):
+            ticker.set_color(color)
+            ticker.set_text(text) 
+            ticker_dict['rendered_text'] = text
+            return time.time()
+            
+    def run_display(self, audio, decoders):
+        fig, axs = plt.subplots(1,2, figsize = (14,2))
+        spec_plot = axs[0].imshow(self.waterfall, origin = 'lower', aspect='auto', alpha = 1, 
+                                  interpolation = 'none', extent=[0, DISPLAY_DUR, 0, audio.params['nf']])
+        axs[1].set_ylim(axs[0].get_ylim())
+        axs[0].set_xticks([])
+        axs[0].set_yticks([])
+        axs[1].set_axis_off()
 
-        for s in decoder_slots:
-            if s['decoder'] is not None:
-                color = 'blue' if s['last_heard'] > time.time() - DECODER_MAX_AGE/2 else 'red'
-                last_change = s['decoder'].render_ticker(color = color)
-                if(last_change):
-                    s['last_heard'] = last_change
-                if s['last_heard'] < time.time() - DECODER_MAX_AGE:
-                    s['decoder'].render_ticker(text='')
-                    s['decoder'] = None
+        self.tickers_updated = time.time()
+        def update(i):
+            idx = self.waterfall_idx
+            spec_plot.set_array(self.waterfall)
+            
+            if(SHOW_KEYLINES):
+                for i, fbin in enumerate(decoders):
+                    keylines[i]['line'].set_ydata(keylines[i]['data'])
 
-        plt.pause(refresh_dt/2)
+            self.tickers_updated = time.time()
+            for fbin in decoders:
+                d = decoders[fbin]
+                if(d is not None):
+                    self.render_ticker(d.ticker, d.ticker_dict)
+            return None         
 
-run()
+        ani = FuncAnimation(plt.gcf(), update, interval = DISPLAY_DT*1000, frames=range(100000), blit=False)
+
+        plt.show()
+        
+
+class App_manager:
+    def __init__(self):
+        self.audio = Audio_in(df = 80, dt = 0.02,  fRng = [200, 1500])
+        self.siglevels = np.zeros(self.audio.params['nf'])
+        self.decoders = {}
+        threading.Thread(target = self.run).start()
+        self.display = Display(self.audio, self.decoders)
+
+    def remove_decoder(self, fbin):
+        d = self.decoders[fbin]
+        if (d is not None):
+            if(d.ticker is not None):
+                d.ticker.set_text(' ' * len(d.ticker_dict['rendered_text']))
+            #self.display.clear_keyline(fbin)
+            del self.decoders[fbin]
+
+    def manage_decoders(self):
+        self.siglevels = np.maximum(self.siglevels * 0.999, self.audio.pwr)
+        fbins_to_cover = np.argsort(-self.siglevels)[:NDECODERS]
+        for fbin in fbins_to_cover:
+            if fbin not in self.decoders:
+                d = TimingDecoder(fbin)
+                d.ticker = self.display.axs[1].text(-0.15, fbin, '*')
+             #   kld = np.zeros_like(self.display_timevals)
+             #   d.keyline = {'data':kld, 'line':axs[0].plot(self.display_timevals,kld)[0]}
+                self.decoders[fbin] = d
+        decoders_to_remove = [d for d in self.decoders.values() if d.fbin not in fbins_to_cover]
+        for d in decoders_to_remove:
+            self.remove_decoder(d.fbin)
+        for fbin in self.decoders:
+            self.decoders[fbin].step(self.audio.pwr[fbin])
+
+
+    def run(self):
+        dt = self.audio.params['dt']
+        while True:
+            t0 = time.time()
+            self.audio.calc_spectrum()
+            self.manage_decoders()
+            elapsed = time.time() - t0
+            time.sleep(max(0, dt - elapsed))
+
+
+app = App_manager()
+
+
+
+
+
+
+
+        
+
+
