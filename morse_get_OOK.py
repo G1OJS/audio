@@ -13,8 +13,8 @@ TICKER_FIELD_LENGTHS = {'MORSE':30, 'TEXT':30}
 TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2.5, 'CHARSEP_WORDSEP':6, 'TIMEOUT':7.5}
 AUDIO_REFRESH_DT = 0.02
 AUDIO_RES= 80
-DISPLAY_REFRESH_DT = .08
-DISPLAY_DUR = 2
+DISPLAY_REFRESH_DT = -1
+DISPLAY_DUR = 5
 MORSE = {
 ".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D",
 ".": "E",     "..-.": "F",  "--.": "G",   "....": "H",
@@ -64,7 +64,7 @@ class TimingDecoder:
     def detect_transition(self, sig):
         t = time.time()
         
-        if(self.keymoves['press_t'] and sig < 0.5): # key -> up
+        if(self.keymoves['press_t'] and sig < 0.4): # key -> up
             mark_dur = t - self.keymoves['press_t']
             self.keymoves = {'press_t': False, 'lift_t': t}
             self.last_lift_t = t
@@ -74,7 +74,7 @@ class TimingDecoder:
         if (t - self.last_lift_t > self.timespec['timeout']) and self.morse_elements:
             return False, False, True
         
-        if(self.keymoves['lift_t'] and sig > 0.8): # key -> down
+        if(self.keymoves['lift_t'] and sig > 0.6): # key -> down
             space_dur = t - self.keymoves['lift_t']
             self.keymoves = {'press_t': t, 'lift_t': False}
             self.keypos = 1
@@ -147,28 +147,32 @@ class App:
         threading.Thread(target = self.dsp).start()
         self.animate()
 
+    def squelch(self, x, a, b):
+        f = np.where(x>a, x, a + b*(x-a))
+        return np.clip(f, 0, None)
+    
     def dsp(self):
         nf = self.audio.params['nf']
         dt = self.audio.params['dt']
-        noise = np.ones(nf)
-        noise_decaying = np.zeros(nf)
-        self.sig_unnorm = np.ones(nf)
-        self.sig = np.ones(nf)
-        decaying_max = np.ones(nf)
-        
+
+        time.sleep(0.1)
+        sig_max = self.audio.calc_spectrum()
+        noise = sig_max
         while True:
             time.sleep(dt)
-            noise = np.minimum(noise, self.audio.pwr)
-            noise_decaying = np.maximum(noise_decaying*0.9, noise)
-            self.sig_unnorm = self.audio.pwr / noise_decaying
-            decaying_max = np.maximum(decaying_max*0.95, self.sig_unnorm)
-            self.sig = self.sig_unnorm / decaying_max
+            pwr = self.audio.calc_spectrum()
+            noise = 0.9 * noise + 0.1 * np.minimum(noise*1.05, pwr)
+            self.snr_lin = pwr / noise
+            sig = self.squelch(self.snr_lin, 100, 10)
+            sig_max = np.maximum(sig_max * 0.85, sig)
+            sig_norm = sig / sig_max
             for d in self.decoders:
-                d.decoder.step(self.sig[d.decoder.fbin])
+                s = sig_norm[d.fbin]
+                d.decoder.step(s)
                 d.keyline['data'][-1] = 0.2 + 0.6 * d.decoder.keypos + d.fbin
                 d.keyline['data'][:-1] = d.keyline['data'][1:]
             self.waterfall = np.roll(self.waterfall, -1, axis =1)
-            self.waterfall[:, -1]  = self.sig_unnorm
+            self.waterfall[:, -1]  = sig_norm
 
     def animate(self):
         fig, axs = plt.subplots(1,2, figsize = (14,2))
@@ -178,11 +182,12 @@ class App:
         axs[1].set_axis_off()
         self.decoders = [UI_decoder(axs, fb, self.timevals) for fb in range(NDECODERS)]
         
-        spec_plot = axs[0].imshow(self.waterfall, origin = 'lower', aspect='auto', alpha = 1, 
-                                      interpolation = 'none', extent=[0, DISPLAY_DUR, 0, self.audio.params['nf']])
+        spec_plot = axs[0].imshow(self.waterfall, origin = 'lower', aspect='auto',
+                                alpha = 1, vmax=1, vmin = 0, interpolation = 'bilinear',
+                                extent=[0, DISPLAY_DUR, 0, self.audio.params['nf']])
         def refresh(i):
             nonlocal spec_plot, axs
-            snr_db = 10 * np.log10(self.sig_unnorm)
+            snr_db = 10 * np.log10(self.snr_lin)
             self.s_meter = np.maximum(self.s_meter * 0.999, snr_db)
             
             if(i % 100 == 0):
@@ -196,18 +201,16 @@ class App:
                         break
 
             spec_plot.set_array(self.waterfall)
-            spec_plot.autoscale()
             
             if(SHOW_KEYLINES):
                 for d in self.decoders:
-
                     d.keyline['line'].set_ydata(d.keyline['data'])
 
             for d in self.decoders:
                 if(d is not None):
                     td = d.decoder.ticker_dict
                     s = self.s_meter[d.fbin]
-                    text = f"{s - 80:+03.0f}dB {td['wpm']:3.0f}wpm   {td['morse']}  {td['text'].strip()}"
+                    text = f"{s:+03.0f}dB {td['wpm']:3.0f}wpm   {td['morse']}  {td['text'].strip()}"
                     if(td['rendered_text'] != text):
                         d.ticker.set_text(text) 
                         td['rendered_text'] = text

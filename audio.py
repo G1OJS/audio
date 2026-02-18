@@ -1,7 +1,6 @@
 import numpy as np
 import pyaudio
 import time
-import threading
 
 CABLE = ['CABLE', 'Out']
 RIG = ['Min', 'CODEC']
@@ -26,7 +25,6 @@ class Audio_in:
         self.params = {'dt':dt, 'nf':nf, 'dt_wpm': int(12/dt)/10, 'hpf': hops_per_fft,
                        'df':df, 'sr':sample_rate, 'fmax':fmax, 'fRng':fRng}
 
-        self.pwr = np.ones(nf)
         self.pya = pyaudio.PyAudio()
         self.input_device_idx = self.find_device(device_keywords)
         self.window = np.hanning(fft_len)
@@ -59,12 +57,12 @@ class Audio_in:
         ns = len(samples)
         self.audiobuff[:-ns] = self.audiobuff[ns:]
         self.audiobuff[-ns:] = samples
-        self.calc_spectrum()
         return (None, pyaudio.paContinue)
 
     def calc_spectrum(self):
-        z = np.fft.rfft(self.audiobuff * self.window)[self.fBins]
-        self.pwr = (z.real*z.real + z.imag*z.imag)
+        buff = self.audiobuff
+        z = np.fft.rfft(buff * self.window)[self.fBins]
+        return z.real*z.real + z.imag*z.imag
 
             
 # testing code
