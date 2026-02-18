@@ -1,12 +1,12 @@
 [project]
 name = "PyMorseLive"
-version = "0.2.0"
+version = "0.2.1"
 license = "GPL-3.0-or-later"
 
 authors = [
   { name="G1OJS", email="g1ojs@yahoo.com" },
 ]
-description = "FT8 Decoding and Encoding in Python with test/loopback code"
+description = "Simple multi-channel timing-based morse decoder written in Python."
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
