@@ -26,5 +26,8 @@ Homepage = "https://github.com/G1OJS/PyMorseLive"
 Issues = "https://github.com/G1OJS/PyMorseLive/issues"
 
 [tool.setuptools]
-packages = ["PyMorseLive"]
+packages = ["pymorse"]
 license-files = ["LICENSE"]
+
+[project.scripts]
+pymorse = "pymorse.PyMorse_OOK:cli"
