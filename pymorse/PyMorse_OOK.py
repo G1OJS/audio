@@ -261,8 +261,9 @@ class App:
                 for fb in fbins_to_decode:
                     if fb not in current_bins_with_decoders:
                         weakest_decoder = decoders_sorted[0]
-                        weakest_decoder.set_fbin(fb)
-                        break
+                        if(self.s_meter[fb] > 2 + self.s_meter[weakest_decoder.fbin]):
+                            weakest_decoder.set_fbin(fb)
+                            break
 
             spec_plot.set_array(self.waterfall)
             
