@@ -14,7 +14,7 @@ TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2, 'CHARSEP_WORDSEP'
 AUDIO_REFRESH_DT = 0.02
 AUDIO_RES= 80
 DISPLAY_REFRESH_DT = -1
-DISPLAY_DUR = 5
+DISPLAY_DUR = 3
 MORSE = {
 ".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D",
 ".": "E",     "..-.": "F",  "--.": "G",   "....": "H",
@@ -41,22 +41,23 @@ class TimingDecoder:
 
     def __init__(self, fbin):
         self.set_fbin(fbin)
+        self.timeactual = {'.':1, '`':1, '-':3, '_':3} # dot, intra-char silence, dash, inter-char silence
 
     def set_fbin(self, fbin):
         self.keypos = 0
         self.fbin = fbin
-        self.keymoves = {'press_t': None, 'lift_t': time.time()}
+        self.keymoves = {'press_t': 0, 'lift_t': time.time()}
         self.morse_elements = ''
         self.last_lift_t = 0
-        self.ticker_dict = {'wpm':16, 'morse':' ' * TICKER_FIELD_LENGTHS['MORSE'], 'text':' ' * TICKER_FIELD_LENGTHS['TEXT'], 'rendered_text':''}
+        self.info_dict = {'wpm':16, 'morse':' ' * TICKER_FIELD_LENGTHS['MORSE'], 'text':' ' * TICKER_FIELD_LENGTHS['TEXT'], 'rendered_text':''}
         self.update_speed(1.2/16)
 
     def update_speed(self, mark_dur):
         if(1.2/SPEED['MAX'] < mark_dur < 3*1.2/SPEED['MIN']):
             wpm_new = 1.2/mark_dur if mark_dur < 1.2/SPEED['MIN'] else 3 * 1.2/mark_dur
             wpm_new = np.clip(wpm_new, SPEED['MIN'], SPEED['MAX'])
-            self.ticker_dict['wpm'] = SPEED['ALPHA'] * wpm_new + (1-SPEED['ALPHA']) * self.ticker_dict['wpm']
-            tu = 1.2/self.ticker_dict['wpm']
+            self.info_dict['wpm'] = SPEED['ALPHA'] * wpm_new + (1-SPEED['ALPHA']) * self.info_dict['wpm']
+            tu = 1.2/self.info_dict['wpm']
             ts = TIMESPEC
             self.timespec = {'dot_short':ts['DOT_SHORT']*tu, 'dot_long':ts['DOT_LONG']*tu,
                              'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_wordsep':ts['CHARSEP_WORDSEP']*tu, 'timeout':ts['TIMEOUT']*tu, }
@@ -64,9 +65,9 @@ class TimingDecoder:
     def detect_transition(self, sig):
         t = time.time()
         
-        if(self.keymoves['press_t'] and sig < 0.4): # key -> up
+        if(0 < self.keymoves['press_t'] < t - self.timespec['dot_short'] and sig < 0.4): # key -> up
             mark_dur = t - self.keymoves['press_t']
-            self.keymoves = {'press_t': False, 'lift_t': t}
+            self.keymoves = {'press_t': 0, 'lift_t': t}
             self.last_lift_t = t
             self.keypos = 0
             return mark_dur, False, False
@@ -74,44 +75,47 @@ class TimingDecoder:
         if (t - self.last_lift_t > self.timespec['timeout']) and self.morse_elements:
             return False, False, True
         
-        if(self.keymoves['lift_t'] and sig > 0.6): # key -> down
+        if(0 < self.keymoves['lift_t'] and sig > 0.6): # key -> down
             space_dur = t - self.keymoves['lift_t']
-            self.keymoves = {'press_t': t, 'lift_t': False}
+            self.keymoves = {'press_t': t, 'lift_t': 0}
             self.keypos = 1
             return False, space_dur, False
         
         return False, False, False
     
-    def classify_duration(self, mark_dur, space_dur, idle):
+    def classify_duration(self, mark_dur, space_dur, is_idle):
         ts = self.timespec
-        wordsep_char = ''
-        if(self.morse_elements):
-            if self.morse_elements[-1] != '/':
-                wordsep_char = '/'
-        if(idle):
-            return wordsep_char
+        if(is_idle):
+            return '/'
         elif(mark_dur > ts['dot_short']):
             return '.' if mark_dur < ts['dot_long'] else '-'
         elif(space_dur > ts['charsep_short']):
-            return ' ' if space_dur < ts['charsep_wordsep'] else wordsep_char
-        return ''
+            return '_' if space_dur < ts['charsep_wordsep'] else '/'
+        return '`' if space_dur else ''
+
+    def update_durations(self, mark_dur, space_dur, el):
+        if el in self.timeactual:
+            self.timeactual[el] = 0.99*self.timeactual[el] + 0.01* (mark_dur if mark_dur else space_dur) / (1.2/self.info_dict['wpm'])
 
     def process_element(self, el):
-        self.ticker_dict['morse'] = (self.ticker_dict['morse'] + el)[-TICKER_FIELD_LENGTHS['MORSE']:]
-        if(el in ['/', ' ']):
+        if(el =='`'):
+            return
+        if(el not in ['_', '/'] or self.info_dict['morse'][-1] not in [' ', '/']):
+            self.info_dict['morse'] = (self.info_dict['morse'] + el.replace('_',' '))[-TICKER_FIELD_LENGTHS['MORSE']:]
+        if el in ['.','-']:
+            self.morse_elements = self.morse_elements + el
+        elif(el in ['_', '/']):
             char = MORSE.get(self.morse_elements, '')
             self.morse_elements = ''
-            self.ticker_dict['text'] = ( self.ticker_dict['text'] + char + (' ' if el == '/' else '') )[-TICKER_FIELD_LENGTHS['TEXT']:]
-        else:
-            self.morse_elements = self.morse_elements + el
+            wdspace = ' ' if el == '/' and not self.info_dict['text'].endswith(' ') else ''
+            self.info_dict['text'] = ( self.info_dict['text'] + char + wdspace)[-TICKER_FIELD_LENGTHS['TEXT']:]
                 
     def step(self, sig):
         mark_dur, space_dur, is_idle = self.detect_transition(sig)
-        if any([mark_dur, space_dur, is_idle]):
-            el = self.classify_duration(mark_dur, space_dur, is_idle)
-            if(mark_dur):
-                self.update_speed(mark_dur)
-            self.process_element(el)
+        el = self.classify_duration(mark_dur, space_dur, is_idle)
+        self.update_durations(mark_dur, space_dur, el)
+        self.update_speed(mark_dur)
+        self.process_element(el)
 
 class UI_decoder:
     def __init__(self, axs, fbin, timevals):
@@ -126,7 +130,7 @@ class UI_decoder:
     def set_fbin(self, fbin):
         self.fbin = fbin
         if(self.ticker is not None):
-            self.ticker.set_text(' ' * len(self.decoder.ticker_dict['rendered_text']))
+            self.ticker.set_text(' ' * len(self.decoder.info_dict['rendered_text']))
             self.ticker.remove()
         if(self.keyline is not None):
             self.keyline['line'].remove()
@@ -208,9 +212,10 @@ class App:
 
             for d in self.decoders:
                 if(d is not None):
-                    td = d.decoder.ticker_dict
+                    td = d.decoder.info_dict
                     s = self.s_meter[d.fbin]
-                    text = f"{s:+03.0f}dB {td['wpm']:3.0f}wpm   {td['morse']}  {td['text'].strip()}"
+                    speed_info = ' '.join([f"{k}{v:5.3f}" for k,v in d.decoder.timeactual.items()])
+                    text = f"{s:+03.0f}dB {td['wpm']:3.0f}wpm  {speed_info} {td['morse']}  {td['text'].strip()}"
                     if(td['rendered_text'] != text):
                         d.ticker.set_text(text) 
                         td['rendered_text'] = text
