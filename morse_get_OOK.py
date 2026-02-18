@@ -9,8 +9,8 @@ F_RANGE = [200, 1500]
 NDECODERS = 3
 SHOW_KEYLINES = True
 SPEED = {'MAX':45, 'MIN':12, 'ALPHA':0.05}
-TICKER_FIELD_LENGTHS = {'MORSE':30, 'TEXT':30}
-TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2.5, 'CHARSEP_WORDSEP':6, 'TIMEOUT':7.5}
+TICKER_FIELD_LENGTHS = {'MORSE':40, 'TEXT':10}
+TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2, 'CHARSEP_WORDSEP':6, 'TIMEOUT':7.5}
 AUDIO_REFRESH_DT = 0.02
 AUDIO_RES= 80
 DISPLAY_REFRESH_DT = -1
@@ -172,7 +172,7 @@ class App:
                 d.keyline['data'][-1] = 0.2 + 0.6 * d.decoder.keypos + d.fbin
                 d.keyline['data'][:-1] = d.keyline['data'][1:]
             self.waterfall = np.roll(self.waterfall, -1, axis =1)
-            self.waterfall[:, -1]  = sig_norm
+            self.waterfall[:, -1]  = 10*np.log10(self.snr_lin)
 
     def animate(self):
         fig, axs = plt.subplots(1,2, figsize = (14,2))
@@ -183,7 +183,7 @@ class App:
         self.decoders = [UI_decoder(axs, fb, self.timevals) for fb in range(NDECODERS)]
         
         spec_plot = axs[0].imshow(self.waterfall, origin = 'lower', aspect='auto',
-                                alpha = 1, vmax=1, vmin = 0, interpolation = 'bilinear',
+                                alpha = 1, vmin = 5,  vmax=25, interpolation = 'bilinear',
                                 extent=[0, DISPLAY_DUR, 0, self.audio.params['nf']])
         def refresh(i):
             nonlocal spec_plot, axs
