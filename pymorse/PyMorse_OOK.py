@@ -2,6 +2,7 @@ import numpy as np
 import time
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+import threading
 import pyaudio
 import argparse
 
@@ -9,8 +10,7 @@ SHOW_KEYLINES = True
 SPEED = {'MAX':45, 'MIN':12, 'ALPHA':0.05}
 TICKER_FIELD_LENGTHS = {'MORSE':40, 'TEXT':30}
 TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2, 'CHARSEP_WORDSEP':6, 'TIMEOUT':7.5}
-AUDIO_REFRESH_DT = 0.01
-FRAME_RATE = 35
+
 
 DISPLAY_DUR = 1
 MORSE = {
@@ -35,29 +35,11 @@ MORSE = {
     
 class Audio_in:
     
-    def __init__(self, input_device_keywords = ['Mic', 'CODEC'], df = 10, dt = 0.01, fft_len = 256, fRng = [300,800]):
-        dt_req = dt
-        fft_out_len = fft_len //2 + 1
-        fmax = fft_out_len * df
-        fRng = np.clip(fRng, None, fmax)
-        sample_rate = int(fft_len * df)
-        dt1 = fft_len/sample_rate
-        hops_per_fft = np.max([int(dt1/dt_req),1])
-        dt = dt1/hops_per_fft
-        self.frames_perbuff = fft_len // hops_per_fft
-        self.audiobuff = np.zeros(fft_len, dtype=np.float32)
-
-        self.fBins = range(int(fRng[0]/df), int(fRng[1]/df) - 1)
-        fRng = [self.fBins[0] * df, self.fBins[-1] * df]
-        nf = len(self.fBins)
-        self.params = {'dt':dt, 'nf':nf, 'dt_wpm': int(12/dt)/10, 'hpf': hops_per_fft,
-                       'df':df, 'sr':sample_rate, 'fmax':fmax, 'fRng':fRng}
-
+    def __init__(self, input_device_keywords, sample_rate, bufflen, frames_perbuff):
+        self.audiobuff = np.zeros(bufflen, dtype=np.float32)
         self.pya = pyaudio.PyAudio()
         self.input_device_idx = self.find_device(input_device_keywords)
-        self.window = np.hanning(fft_len)
-        self.start_audio_in(sample_rate)
-        print(self.params)
+        self.start_audio_in(sample_rate, frames_perbuff)
         
     def find_device(self, device_str_contains):
         if(not device_str_contains): #(this check probably shouldn't be needed - check calling code)
@@ -73,11 +55,11 @@ class Audio_in:
                 return dev_idx
         print(f"[Audio] No audio device found matching {device_str_contains}")
     
-    def start_audio_in(self, sample_rate):
+    def start_audio_in(self, sample_rate, frames_perbuff):
         stream = self.pya.open(
             format = pyaudio.paInt16, channels=1, rate = sample_rate,
             input = True, input_device_index = self.input_device_idx,
-            frames_per_buffer = self.frames_perbuff, stream_callback=self._pya_callback,)
+            frames_per_buffer = frames_perbuff, stream_callback=self._pya_callback,)
         stream.start_stream()
 
     def _pya_callback(self, in_data, frame_count, time_info, status_flags):
@@ -87,10 +69,43 @@ class Audio_in:
         self.audiobuff[-ns:] = samples
         return (None, pyaudio.paContinue)
 
+class Spectrum:
+    def __init__(self, input_device_keywords, df,  freq_range, fft_len = 256):
+        fft_out_len = fft_len //2 + 1
+        fmax = fft_out_len * df
+        freq_range = np.clip(freq_range, None, fmax)
+        sample_rate = int(fft_len * df)
+        self.fBins = range(int(freq_range[0]/df), int(freq_range[1]/df) - 1)
+        freq_range = [self.fBins[0] * df, self.fBins[-1] * df]
+        self.nf = len(self.fBins)
+        self.params = {'nf':self.nf, 'df':df, 'sr':sample_rate, 'fmax':fmax, 'fRng':freq_range}
+        print(self.params)
+        self.window = np.hanning(fft_len)
+        self.audio = Audio_in(input_device_keywords, sample_rate, fft_len, int(fft_len/8))
+        time.sleep(0.5)
+        self.initialise_spectrum_vars()
+
+    def initialise_spectrum_vars(self):
+        self.sig_max = self.calc_spectrum()
+        self.noise = self.sig_max
+        self.snr_lin = np.zeros(self.nf)
+        self.sig_norm = np.zeros(self.nf)
+
+    def squelch(self, x, a, b):
+        f = np.where(x>a, x, a + b*(x-a))
+        return np.clip(f, 0, None)
+
     def calc_spectrum(self):
-        buff = self.audiobuff
-        z = np.fft.rfft(buff * self.window)[self.fBins]
+        z = np.fft.rfft(self.audio.audiobuff * self.window)[self.fBins]
         return z.real*z.real + z.imag*z.imag
+        
+    def update_spectrum_vars(self):
+        pwr = self.calc_spectrum()
+        self.noise = 0.9 * self.noise + 0.1 * np.minimum(self.noise*1.05, pwr)
+        self.snr_lin = pwr / (self.noise + 0.01)
+        self.sig = self.squelch(self.snr_lin, 100, 10)
+        self.sig_max = np.maximum(self.sig_max * 0.85, self.sig)
+        self.sig_norm = self.sig / self.sig_max
 
 
 class TimingDecoder:
@@ -195,65 +210,66 @@ class UI_decoder:
         kld = np.zeros_like(self.timevals)
         self.keyline = {'data':kld, 'line':self.axs[0].plot(self.timevals, kld, color = 'white', drawstyle='steps-post')[0]}
 
-
-def squelch(x, a, b):
-        f = np.where(x>a, x, a + b*(x-a))
-        return np.clip(f, 0, None)
+    def step(self, sig, wf_idx):
+        self.decoder.step(sig)
+        self.keyline['data'][wf_idx] = 0.2 + 0.6 * self.decoder.keypos + self.fbin
         
-def run(input_device_keywords, freq_range, df, n_decoders, show_processing):
-        audio = Audio_in(input_device_keywords = input_device_keywords, df = df, dt = 0.005,  fRng = freq_range)
+def run(input_device_keywords, freq_range, df, hop_ms, refresh_divider, n_decoders, show_processing):
+
+        data_idx = 0
+        spectrum = Spectrum(input_device_keywords, df,  freq_range)
+        nf = spectrum.nf
+        display_nt = int(DISPLAY_DUR * 1000 / hop_ms)
+        waterfall = np.zeros((nf, display_nt))
+        timevals = np.linspace(0, DISPLAY_DUR, display_nt)
+
+        s_meter = np.zeros(nf)
+        t0 =  time.time()
+        hop_times = []
+        show_speed_info = False
+
         fig, axs = plt.subplots(1,2, width_ratios=[1, 2], figsize = (10,4))
         fig.suptitle("PyMorse by G1OJS", horizontalalignment = 'left', x = 0.1)
-        axs[1].set_ylim(0, audio.params['nf'])
+        axs[1].set_ylim(0, nf)
         axs[0].set_xticks([])
         axs[0].set_yticks([])
         axs[1].set_axis_off()
-
-        nf = audio.params['nf']
-        dt = audio.params['dt']
-        
-        display_nt = int(DISPLAY_DUR / dt)
-        waterfall = np.zeros((nf, display_nt))
-        timevals = np.linspace(0, DISPLAY_DUR, display_nt)
         decoders = [UI_decoder(axs, fb, timevals) for fb in range(n_decoders)]
         
-        spec_plot = axs[0].imshow(waterfall, origin = 'lower', aspect='auto',
-                                alpha = 1, vmin = 5,  vmax=25, interpolation = 'bilinear',
-                                extent=[0, DISPLAY_DUR, 0, nf])
-        snr_lin = np.zeros(nf)
-        s_meter = np.zeros(nf)
-        sig_max = audio.calc_spectrum()
-        noise = sig_max
-        t = time.time()
-        n = int((1/FRAME_RATE) / dt)
-        print(n)
-        def refresh(i):
-            nonlocal spec_plot, axs, t, snr_lin, n, s_meter, sig_max, noise, waterfall, decoders
+        spec_plot = axs[0].imshow(waterfall, origin = 'lower', aspect='auto', alpha = 1,
+                                  vmin = 5,  vmax=25, interpolation = 'bilinear', extent=[0, DISPLAY_DUR, 0, nf])
 
-            pwr = audio.calc_spectrum()
-            noise = 0.9 * noise + 0.1 * np.minimum(noise*1.05, pwr)
-            snr_lin = pwr / noise + 0.01
-            sig = squelch(snr_lin, 100, 10)
-            sig_max = np.maximum(sig_max * 0.85, sig)
-            sig_norm = sig / sig_max
-            for d in decoders:
-                s = sig_norm[d.fbin]
-                d.decoder.step(s)
-                d.keyline['data'][-1] = 0.2 + 0.6 * d.decoder.keypos + d.fbin
-                d.keyline['data'][:-1] = d.keyline['data'][1:]
-            waterfall = np.roll(waterfall, -1, axis =1)
-            waterfall[:, -1]  = 10*np.log10(snr_lin)
+        def update_calcs(hop_ms):
+            nonlocal hop_times, t0, data_idx
+            while True:
+                time.sleep(hop_ms/1000)
+                t = time.time()
+                hop_times.append(1000*(t- t0))
+                t0 = t
+                spectrum.update_spectrum_vars()
+                data_idx = (data_idx +1) % display_nt
+                sig_norm = spectrum.sig_norm
+                for d in decoders:
+                    d.step(sig_norm[d.fbin], data_idx)
+                inst_dB = 10*np.log10(spectrum.snr_lin)
+                waterfall[:, data_idx]  = inst_dB
+        
+        def refresh(display_idx):
+            nonlocal display_nt, hop_times, data_idx, spec_plot, s_meter, waterfall, decoders, show_speed_info
 
-            if((i % n) == 0):
-                snr_db = 10 * np.log10(snr_lin)
-                s_meter = np.maximum(s_meter * 0.999, snr_db)
-                
+            if((display_idx % 100) == 0):
+                print(' '.join([f"{t:5.3f}" for t in hop_times[:10]]))
+                hop_times = []
+
+            spec_plot.set_data(waterfall)
+            
+            if((display_idx % refresh_divider) == 0):
+                s_meter = np.maximum(s_meter * 0.999, waterfall[:, data_idx])
                 spec_plot.set_array(waterfall)
                 if(SHOW_KEYLINES):
                     for d in decoders:
-                        d.keyline['line'].set_ydata(d.keyline['data'])            
+                        d.keyline['line'].set_ydata(d.keyline['data']) 
 
-                show_speed_info = False
                 for d in decoders:
                     if(d is not None):
                         td = d.decoder.info_dict
@@ -263,8 +279,8 @@ def run(input_device_keywords, freq_range, df, n_decoders, show_processing):
                         if(td['rendered_text'] != text):
                             d.ticker.set_text(text) 
                             td['rendered_text'] = text
-                            
-            if(i % 10*n == 0):
+                           
+            if((display_idx % 100*refresh_divider) == 0):
                 fbins_to_decode = np.argsort(-s_meter)[:n_decoders]
                 decoders_sorted = sorted(decoders, key=lambda d: s_meter[d.fbin])
                 current_bins_with_decoders = [d.fbin for d in decoders]
@@ -275,13 +291,11 @@ def run(input_device_keywords, freq_range, df, n_decoders, show_processing):
                             weakest_decoder.set_fbin(fb)
                             break
             
-            if((i % 1000) == 0):
-                print((time.time() - t)/1000)
-                t = time.time()
-            
             return spec_plot, *[d.keyline['line'] for d in decoders], *[d.ticker for d in decoders],
-        
-        ani = FuncAnimation(plt.gcf(), refresh, interval = 1000*dt, frames=range(display_nt), blit=True)
+   
+
+        threading.Thread(target = update_calcs, args = (hop_ms,) ).start()
+        ani = FuncAnimation(plt.gcf(), refresh, interval = hop_ms, frames = 10000,  blit=True)
         plt.show()
 
 
@@ -296,15 +310,17 @@ def cli():
     
     args = parser.parse_args()
     input_device_keywords = args.inputcard_keywords.replace(' ','').split(',') if args.inputcard_keywords is not None else None
-    df = args.df if args.df is not None else 50
-    freq_range = np.array(args.freq_range) if args.freq_range is not None else [200, 800]
+    df = args.df if args.df is not None else 40
+    freq_range = np.array(args.freq_range) if args.freq_range is not None else [200, 1800]
     n_decoders = args.n_decoders if args.n_decoders is not None else 3
     
     input_device_keywords = args.inputcard_keywords.replace(' ','').split(',') if args.inputcard_keywords is not None else None
    # show_processing = args.show_processing if args.show_processing is not None else False
     show_processing = False
-    
-    run(input_device_keywords, freq_range, df, n_decoders, show_processing)
+
+    hop_ms = 20
+    refresh_divider = 50
+    run(input_device_keywords, freq_range, df, hop_ms, refresh_divider, n_decoders, show_processing)
 
 
 cli()
