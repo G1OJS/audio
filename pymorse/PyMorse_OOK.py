@@ -12,7 +12,7 @@ TICKER_FIELD_LENGTHS = {'MORSE':40, 'TEXT':30}
 TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2, 'CHARSEP_WORDSEP':6, 'TIMEOUT':7.5}
 
 
-DISPLAY_DUR = 1
+DISPLAY_DUR = 3
 MORSE = {
 ".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D",
 ".": "E",     "..-.": "F",  "--.": "G",   "....": "H",
@@ -210,13 +210,8 @@ class UI_decoder:
         kld = np.zeros_like(self.timevals)
         self.keyline = {'data':kld, 'line':self.axs[0].plot(self.timevals, kld, color = 'white', drawstyle='steps-post')[0]}
 
-    def step(self, sig, wf_idx):
-        self.decoder.step(sig)
-        self.keyline['data'][wf_idx] = 0.2 + 0.6 * self.decoder.keypos + self.fbin
-        
-def run(input_device_keywords, freq_range, df, hop_ms, refresh_divider, n_decoders, show_processing):
+def run(input_device_keywords, freq_range, df, hop_ms, n_decoders, show_processing):
 
-        data_idx = 0
         spectrum = Spectrum(input_device_keywords, df,  freq_range)
         nf = spectrum.nf
         display_nt = int(DISPLAY_DUR * 1000 / hop_ms)
@@ -224,11 +219,9 @@ def run(input_device_keywords, freq_range, df, hop_ms, refresh_divider, n_decode
         timevals = np.linspace(0, DISPLAY_DUR, display_nt)
 
         s_meter = np.zeros(nf)
-        t0 =  time.time()
-        hop_times = []
         show_speed_info = False
 
-        fig, axs = plt.subplots(1,2, width_ratios=[1, 2], figsize = (10,4))
+        fig, axs = plt.subplots(1,2, width_ratios=[1, 1], figsize = (15,3))
         fig.suptitle("PyMorse by G1OJS", horizontalalignment = 'left', x = 0.1)
         axs[1].set_ylim(0, nf)
         axs[0].set_xticks([])
@@ -239,48 +232,45 @@ def run(input_device_keywords, freq_range, df, hop_ms, refresh_divider, n_decode
         spec_plot = axs[0].imshow(waterfall, origin = 'lower', aspect='auto', alpha = 1,
                                   vmin = 5,  vmax=25, interpolation = 'bilinear', extent=[0, DISPLAY_DUR, 0, nf])
 
-        def update_calcs(hop_ms):
-            nonlocal hop_times, t0, data_idx
+        last_hop = time.time()
+        def processing_loop(hop_ms):
+            nonlocal waterfall, last_hop
             while True:
-                time.sleep(hop_ms/1000)
-                t = time.time()
-                hop_times.append(1000*(t- t0))
-                t0 = t
+                delay = hop_ms/1000 - (time.time() - last_hop)
+                time.sleep(delay if delay > 0 else 0)
+                last_hop = time.time()
                 spectrum.update_spectrum_vars()
-                data_idx = (data_idx +1) % display_nt
                 sig_norm = spectrum.sig_norm
                 for d in decoders:
-                    d.step(sig_norm[d.fbin], data_idx)
+                    fbin = d.fbin
+                    d.decoder.step(sig_norm[fbin])
+                    d.keyline['data'] = np.roll(d.keyline['data'], -1)
+                    d.keyline['data'][-1] = 0.2 + 0.6 * d.decoder.keypos + fbin
                 inst_dB = 10*np.log10(spectrum.snr_lin)
-                waterfall[:, data_idx]  = inst_dB
+                waterfall = np.roll(waterfall, -1, axis = 1)
+                waterfall[:, -1]  = inst_dB
         
-        def refresh(display_idx):
-            nonlocal display_nt, hop_times, data_idx, spec_plot, s_meter, waterfall, decoders, show_speed_info
+        def display_loop(display_idx):
+            nonlocal display_nt, spec_plot, s_meter, waterfall, decoders, show_speed_info
 
-            if((display_idx % 100) == 0):
-                print(' '.join([f"{t:5.3f}" for t in hop_times[:10]]))
-                hop_times = []
-
-            spec_plot.set_data(waterfall)
-            
-            if((display_idx % refresh_divider) == 0):
-                s_meter = np.maximum(s_meter * 0.999, waterfall[:, data_idx])
-                spec_plot.set_array(waterfall)
-                if(SHOW_KEYLINES):
-                    for d in decoders:
-                        d.keyline['line'].set_ydata(d.keyline['data']) 
-
+            spec_plot.set_data(waterfall)            
+            s_meter = np.maximum(s_meter * 0.99, waterfall[:, -1])
+            spec_plot.set_array(waterfall)
+            if(SHOW_KEYLINES):
                 for d in decoders:
-                    if(d is not None):
-                        td = d.decoder.info_dict
-                        s = s_meter[d.fbin]
-                        speed_info = ' '.join([f"{k}{v:5.3f}" for k,v in d.decoder.timeactual.items()]) if show_speed_info else ''
-                        text = f"{s:+03.0f}dB {td['wpm']:3.0f}wpm  {speed_info} {td['morse']}  {td['text'].strip()}"
-                        if(td['rendered_text'] != text):
-                            d.ticker.set_text(text) 
-                            td['rendered_text'] = text
+                    d.keyline['line'].set_ydata(d.keyline['data']) 
+
+            for d in decoders:
+                if(d is not None):
+                    td = d.decoder.info_dict
+                    s = s_meter[d.fbin]
+                    speed_info = ' '.join([f"{k}{v:5.3f}" for k,v in d.decoder.timeactual.items()]) if show_speed_info else ''
+                    text = f"{s:+03.0f}dB {td['wpm']:3.0f}wpm  {speed_info} {td['morse']}  {td['text'].strip()}"
+                    if(td['rendered_text'] != text):
+                        d.ticker.set_text(text) 
+                        td['rendered_text'] = text
                            
-            if((display_idx % 100*refresh_divider) == 0):
+            if((display_idx % 10) == 0):
                 fbins_to_decode = np.argsort(-s_meter)[:n_decoders]
                 decoders_sorted = sorted(decoders, key=lambda d: s_meter[d.fbin])
                 current_bins_with_decoders = [d.fbin for d in decoders]
@@ -294,8 +284,8 @@ def run(input_device_keywords, freq_range, df, hop_ms, refresh_divider, n_decode
             return spec_plot, *[d.keyline['line'] for d in decoders], *[d.ticker for d in decoders],
    
 
-        threading.Thread(target = update_calcs, args = (hop_ms,) ).start()
-        ani = FuncAnimation(plt.gcf(), refresh, interval = hop_ms, frames = 10000,  blit=True)
+        threading.Thread(target = processing_loop, args = (hop_ms,) ).start()
+        ani = FuncAnimation(plt.gcf(), display_loop, interval = 10, frames = 10000,  blit=True)
         plt.show()
 
 
@@ -318,9 +308,8 @@ def cli():
    # show_processing = args.show_processing if args.show_processing is not None else False
     show_processing = False
 
-    hop_ms = 20
-    refresh_divider = 50
-    run(input_device_keywords, freq_range, df, hop_ms, refresh_divider, n_decoders, show_processing)
+    hop_ms = 10
+    run(input_device_keywords, freq_range, df, hop_ms, n_decoders, show_processing)
 
 
 cli()
