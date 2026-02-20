@@ -1,18 +1,18 @@
 import numpy as np
 import time
-import threading
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+import threading
 import pyaudio
 import argparse
 
 SHOW_KEYLINES = True
 SPEED = {'MAX':45, 'MIN':12, 'ALPHA':0.05}
-TICKER_FIELD_LENGTHS = {'MORSE':40, 'TEXT':30}
+TICKER_FIELD_LENGTHS = {'MORSE':30, 'TEXT':30}
 TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2, 'CHARSEP_WORDSEP':6, 'TIMEOUT':7.5}
-AUDIO_REFRESH_DT = 0.01
-DISPLAY_REFRESH_DIVISOR = 4
-DISPLAY_DUR = 1
+
+
+DISPLAY_DUR = 3
 MORSE = {
 ".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D",
 ".": "E",     "..-.": "F",  "--.": "G",   "....": "H",
@@ -35,29 +35,11 @@ MORSE = {
     
 class Audio_in:
     
-    def __init__(self, input_device_keywords = ['Mic', 'CODEC'], df = 10, dt = 0.01, fft_len = 256, fRng = [300,800]):
-        dt_req = dt
-        fft_out_len = fft_len //2 + 1
-        fmax = fft_out_len * df
-        fRng = np.clip(fRng, None, fmax)
-        sample_rate = int(fft_len * df)
-        dt1 = fft_len/sample_rate
-        hops_per_fft = np.max([int(dt1/dt_req),1])
-        dt = dt1/hops_per_fft
-        self.frames_perbuff = fft_len // hops_per_fft
-        self.audiobuff = np.zeros(fft_len, dtype=np.float32)
-
-        self.fBins = range(int(fRng[0]/df), int(fRng[1]/df) - 1)
-        fRng = [self.fBins[0] * df, self.fBins[-1] * df]
-        nf = len(self.fBins)
-        self.params = {'dt':dt, 'nf':nf, 'dt_wpm': int(12/dt)/10, 'hpf': hops_per_fft,
-                       'df':df, 'sr':sample_rate, 'fmax':fmax, 'fRng':fRng}
-
+    def __init__(self, input_device_keywords, sample_rate, bufflen, frames_perbuff):
+        self.audiobuff = np.zeros(bufflen, dtype=np.float32)
         self.pya = pyaudio.PyAudio()
         self.input_device_idx = self.find_device(input_device_keywords)
-        self.window = np.hanning(fft_len)
-        self.start_audio_in(sample_rate)
-        print(self.params)
+        self.start_audio_in(sample_rate, frames_perbuff)
         
     def find_device(self, device_str_contains):
         if(not device_str_contains): #(this check probably shouldn't be needed - check calling code)
@@ -73,11 +55,11 @@ class Audio_in:
                 return dev_idx
         print(f"[Audio] No audio device found matching {device_str_contains}")
     
-    def start_audio_in(self, sample_rate):
+    def start_audio_in(self, sample_rate, frames_perbuff):
         stream = self.pya.open(
             format = pyaudio.paInt16, channels=1, rate = sample_rate,
             input = True, input_device_index = self.input_device_idx,
-            frames_per_buffer = self.frames_perbuff, stream_callback=self._pya_callback,)
+            frames_per_buffer = frames_perbuff, stream_callback=self._pya_callback,)
         stream.start_stream()
 
     def _pya_callback(self, in_data, frame_count, time_info, status_flags):
@@ -87,10 +69,43 @@ class Audio_in:
         self.audiobuff[-ns:] = samples
         return (None, pyaudio.paContinue)
 
+class Spectrum:
+    def __init__(self, input_device_keywords, df,  freq_range, fft_len = 256):
+        fft_out_len = fft_len //2 + 1
+        fmax = fft_out_len * df
+        freq_range = np.clip(freq_range, None, fmax)
+        sample_rate = int(fft_len * df)
+        self.fBins = range(int(freq_range[0]/df), int(freq_range[1]/df) - 1)
+        freq_range = [self.fBins[0] * df, self.fBins[-1] * df]
+        self.nf = len(self.fBins)
+        self.params = {'nf':self.nf, 'df':df, 'sr':sample_rate, 'fmax':fmax, 'fRng':freq_range}
+        print(self.params)
+        self.window = np.hanning(fft_len)
+        self.audio = Audio_in(input_device_keywords, sample_rate, fft_len, int(fft_len/8))
+        time.sleep(0.5)
+        self.initialise_spectrum_vars()
+
+    def initialise_spectrum_vars(self):
+        self.sig_max = self.calc_spectrum()
+        self.noise = self.sig_max
+        self.snr_lin = np.zeros(self.nf)
+        self.sig_norm = np.zeros(self.nf)
+
+    def squelch(self, x, a, b):
+        f = np.where(x>a, x, a + b*(x-a))
+        return np.clip(f, 0, None)
+
     def calc_spectrum(self):
-        buff = self.audiobuff
-        z = np.fft.rfft(buff * self.window)[self.fBins]
+        z = np.fft.rfft(self.audio.audiobuff * self.window)[self.fBins]
         return z.real*z.real + z.imag*z.imag
+        
+    def update_spectrum_vars(self):
+        pwr = self.calc_spectrum()
+        self.noise = 0.9 * self.noise + 0.1 * np.minimum(self.noise*1.05, pwr)
+        self.snr_lin = pwr / (self.noise + 0.01)
+        self.sig = self.squelch(self.snr_lin, 100, 10)
+        self.sig_max = np.maximum(self.sig_max * 0.85, self.sig)
+        self.sig_norm = self.sig / self.sig_max
 
 
 class TimingDecoder:
@@ -174,120 +189,124 @@ class TimingDecoder:
         self.process_element(el)
 
 class UI_decoder:
-    def __init__(self, axs, fbin, timevals):
+    def __init__(self, ax, fbin, timevals):
         self.timevals = timevals
-        self.axs = axs
+        self.ax = ax
         self.decoder = TimingDecoder(fbin)
         self.ticker = None
         self.keyline = None
-        self.s_meter = 0
         self.set_fbin(fbin)
 
     def set_fbin(self, fbin):
         self.fbin = fbin
-        if(self.ticker is not None):
-            self.ticker.set_text(' ' * len(self.decoder.info_dict['rendered_text']))
-            self.ticker.remove()
+        self.decoder.set_fbin(fbin)
+        kld = np.zeros_like(self.timevals)
+        self.keyline = {'data':kld, 'line':self.ax.plot(self.timevals, kld, color = 'white', drawstyle='steps-post')[0]}
+
+    def remove(self, fbin):
+        self.fbin = None
         if(self.keyline is not None):
             self.keyline['line'].remove()
-        self.decoder.set_fbin(fbin)
-        self.ticker = self.axs[1].text(-0.15, fbin, '*')
-        kld = np.zeros_like(self.timevals)
-        self.keyline = {'data':kld, 'line':self.axs[0].plot(self.timevals, kld, color = 'white', drawstyle='steps-post')[0]}
+        self.decoder = None
 
-class App:
-    def __init__(self, input_device_keywords, freq_range, df, n_decoders, show_processing):
-        self.n_decoders = n_decoders
-        print(input_device_keywords, freq_range, df, n_decoders, show_processing)
-        self.audio = Audio_in(input_device_keywords = input_device_keywords, df = df, dt = AUDIO_REFRESH_DT,  fRng = freq_range)
-        self.display_refresh_dt = DISPLAY_REFRESH_DIVISOR * self.audio.params['dt']
-        self.display_nt = int(DISPLAY_DUR / self.audio.params['dt'])
-        self.waterfall = np.zeros((self.audio.params['nf'], self.display_nt))
-        self.decoders = []
-        self.snr_lin = np.zeros(self.audio.params['nf'])
-        self.s_meter = np.zeros(self.audio.params['nf'])
-        self.timevals = np.linspace(0, DISPLAY_DUR, self.display_nt)
-        threading.Thread(target = self.dsp).start()
-        self.animate()
+def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decoders, show_processing):
 
-    def squelch(self, x, a, b):
-        f = np.where(x>a, x, a + b*(x-a))
-        return np.clip(f, 0, None)
-    
-    def dsp(self):
-        nf = self.audio.params['nf']
-        dt = self.audio.params['dt']
+        spectrum = Spectrum(input_device_keywords, df,  freq_range)
+        nf = spectrum.nf
+        display_nt = int(DISPLAY_DUR * 1000 / hop_ms)
+        waterfall = np.zeros((nf, display_nt))
+        timevals = np.linspace(0, DISPLAY_DUR, display_nt)
+        s_meter = np.zeros(nf)
+        show_speed_info = False
 
-        time.sleep(0.1)
-        sig_max = self.audio.calc_spectrum()
-        noise = sig_max
-        while True:
-            time.sleep(dt)
-            pwr = self.audio.calc_spectrum()
-            noise = 0.9 * noise + 0.1 * np.minimum(noise*1.05, pwr)
-            self.snr_lin = pwr / noise + 0.01
-            sig = self.squelch(self.snr_lin, 100, 10)
-            sig_max = np.maximum(sig_max * 0.85, sig)
-            sig_norm = sig / sig_max
-            for d in self.decoders:
-                s = sig_norm[d.fbin]
-                d.decoder.step(s)
-                d.keyline['data'][-1] = 0.2 + 0.6 * d.decoder.keypos + d.fbin
-                d.keyline['data'][:-1] = d.keyline['data'][1:]
-            self.waterfall = np.roll(self.waterfall, -1, axis =1)
-            self.waterfall[:, -1]  = 10*np.log10(self.snr_lin)
-
-    def animate(self):
-        fig, axs = plt.subplots(1,2, width_ratios=[1, 2], figsize = (10,4))
-        fig.suptitle("PyMorse by G1OJS", horizontalalignment = 'left', x = 0.1)
-        axs[1].set_ylim(0, self.audio.params['nf'])
-        axs[0].set_xticks([])
-        axs[0].set_yticks([])
-        axs[1].set_axis_off()
-        self.decoders = [UI_decoder(axs, fb, self.timevals) for fb in range(self.n_decoders)]
+        fig, axs = plt.subplots(1,2, width_ratios=[1, 1], figsize = (12,3))
+        fig.set_facecolor("lightgrey")
+        ax_wf, ax_tx = axs
+        box_wf = ax_wf.get_position()
+        box_wf.x0 = 0.1
+        box_wf.x1 = 0.45
+        box_tx = ax_tx.get_position()
+        box_tx.x0 = box_wf.x1
+        ax_wf.set_position(box_wf)
+        ax_tx.set_position(box_tx)
         
-        spec_plot = axs[0].imshow(self.waterfall, origin = 'lower', aspect='auto',
-                                alpha = 1, vmin = 5,  vmax=25, interpolation = 'bilinear',
-                                extent=[0, DISPLAY_DUR, 0, self.audio.params['nf']])
-        def refresh(i):
-            nonlocal spec_plot, axs
-            snr_db = 10 * np.log10(self.snr_lin)
-            self.s_meter = np.maximum(self.s_meter * 0.999, snr_db)
-            
-            if(i % 100 == 0):
-                fbins_to_decode = np.argsort(-self.s_meter)[:self.n_decoders]
-                decoders_sorted = sorted(self.decoders, key=lambda d: self.s_meter[d.fbin])
-                current_bins_with_decoders = [d.fbin for d in self.decoders]
+        fig.suptitle("PyMorse by G1OJS", horizontalalignment = 'left', x = 0.1)
+        ax_tx.set_ylim(0, nf)
+        ax_wf.set_xticks([])
+        ax_wf.set_yticks([])
+        ax_tx.set_axis_off()
+        decoders = [UI_decoder(ax_wf, fb, timevals) for fb in range(n_decoders)]
+        
+        spec_plot = ax_wf.imshow(waterfall, origin = 'lower', aspect='auto', alpha = 1,
+                                  vmin = 5,  vmax=25, interpolation = 'bilinear', extent=[0, DISPLAY_DUR, 0, nf])
+
+        blank_text = ' ' * (TICKER_FIELD_LENGTHS['MORSE'] + TICKER_FIELD_LENGTHS['TEXT'])
+        last_updated = [0] * nf
+        tickers = []
+        for fbin in range(nf):
+            tickers.append(ax_tx.text(0, fbin, ''))
+
+        last_hop = time.time()
+        data_counter = 0
+        def processing_loop(hop_ms):
+            nonlocal waterfall, last_hop, data_counter
+            while True:
+                delay = hop_ms/1000 - (time.time() - last_hop)
+                time.sleep(delay if delay > 0 else 0)
+                last_hop = time.time()
+                spectrum.update_spectrum_vars()
+                sig_norm = spectrum.sig_norm
+                for d in decoders:
+                    fbin = d.fbin
+                    d.decoder.step(sig_norm[fbin])
+                    d.keyline['data'] = np.roll(d.keyline['data'], -1)
+                    d.keyline['data'][-1] = 0.2 + 0.6 * d.decoder.keypos + fbin
+                inst_dB = 10*np.log10(spectrum.snr_lin)
+                waterfall = np.roll(waterfall, -1, axis = 1)
+                waterfall[:, -1]  = inst_dB
+                data_counter += 1
+
+        def display_loop(display_idx):
+            nonlocal data_counter, display_nt, display_decimate, spec_plot, s_meter, waterfall, decoders, show_speed_info
+
+            while data_counter < display_decimate :
+                time.sleep(0)
+            data_counter = 0
+ 
+            spec_plot.set_data(waterfall)            
+            s_meter = np.maximum(s_meter * 0.995, waterfall[:, -1])
+            spec_plot.set_array(waterfall)
+            if(SHOW_KEYLINES):
+                for d in decoders:
+                    d.keyline['line'].set_ydata(d.keyline['data'])
+
+            if((display_idx % 20) == 0):
+                current_bins_with_decoders = [d.fbin for d in decoders]
+                fbins_to_decode = np.argsort(-s_meter)[:n_decoders]
+                decoders_sorted = sorted(decoders, key=lambda d: s_meter[d.fbin])
                 for fb in fbins_to_decode:
                     if fb not in current_bins_with_decoders:
                         weakest_decoder = decoders_sorted[0]
-                        if(self.s_meter[fb] > 2 + self.s_meter[weakest_decoder.fbin]):
+                        if(s_meter[fb] > 3 + s_meter[weakest_decoder.fbin]):
                             weakest_decoder.set_fbin(fb)
                             break
-
-            spec_plot.set_array(self.waterfall)
             
-            if(SHOW_KEYLINES):
-                for d in self.decoders:
-                    d.keyline['line'].set_ydata(d.keyline['data'])
-
-            show_speed_info = False
-            for d in self.decoders:
-                if(d is not None):
+            if((display_idx % 10) == 0):
+                for d in decoders:
                     td = d.decoder.info_dict
-                    s = self.s_meter[d.fbin]
+                    fbin = d.fbin
                     speed_info = ' '.join([f"{k}{v:5.3f}" for k,v in d.decoder.timeactual.items()]) if show_speed_info else ''
-                    text = f"{s:+03.0f}dB {td['wpm']:3.0f}wpm  {speed_info} {td['morse']}  {td['text'].strip()}"
-                    if(td['rendered_text'] != text):
-                        d.ticker.set_text(text) 
-                        td['rendered_text'] = text
+                    decoder_text = f" {td['wpm']:3.0f} wpm {speed_info} {td['morse']}  {td['text'].strip()}"
+                    new_text = f" {s_meter[fbin]:+03.0f}dB {decoder_text}"
+                    fbin = d.fbin
+                    if(tickers[fbin].get_text() != new_text):
+                        tickers[fbin].set_text(new_text)
 
-            return None
-        
-        ani = FuncAnimation(plt.gcf(), refresh, interval = self.display_refresh_dt * 1000, frames=range(100000), blit=False)
+            return spec_plot, *[d.keyline['line'] for d in decoders], *[ticker for ticker in tickers],
+   
+        threading.Thread(target = processing_loop, args = (hop_ms,) ).start()
+        ani = FuncAnimation(plt.gcf(), display_loop, interval = 0, frames = 100000,  blit = True)
         plt.show()
-
-
 
 def cli():
     parser = argparse.ArgumentParser(prog='PyMorseRx', description = 'Command Line Morse decoder')
@@ -299,15 +318,17 @@ def cli():
     
     args = parser.parse_args()
     input_device_keywords = args.inputcard_keywords.replace(' ','').split(',') if args.inputcard_keywords is not None else None
-    df = args.df if args.df is not None else 50
+    df = args.df if args.df is not None else 40
     freq_range = np.array(args.freq_range) if args.freq_range is not None else [200, 800]
     n_decoders = args.n_decoders if args.n_decoders is not None else 3
     
     input_device_keywords = args.inputcard_keywords.replace(' ','').split(',') if args.inputcard_keywords is not None else None
    # show_processing = args.show_processing if args.show_processing is not None else False
     show_processing = False
-    
-    app = App(input_device_keywords, freq_range, df, n_decoders, show_processing)
+
+    hop_ms = 10
+    display_decimate = 2
+    run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decoders, show_processing)
 
 
 cli()
