@@ -272,29 +272,33 @@ def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decod
 
             if((display_idx % 10) == 0):
                 current_bins_with_decoders = [d.fbin for d in decoders]
-                for fbin in range(nf):
-                    if fbin not in current_bins_with_decoders:
-                        if (time.time() - last_updated[fbin] > 15):
-                            tickers[fbin].set_text(blank_text)
-                            tickers[fbin].set_text(f"{s_meter[fbin]:+03.0f}dB {blank_text}")
-                for d in decoders:
-                    td = d.decoder.info_dict
-                    speed_info = ' '.join([f"{k}{v:5.3f}" for k,v in d.decoder.timeactual.items()]) if show_speed_info else ''
-                    decoder_text = f" {td['wpm']:3.0f}wpm  {speed_info} {td['morse']}  {td['text'].strip()}"
-                    fbin = d.fbin
-                    tickers[fbin].set_text(blank_text)
-                    tickers[fbin].set_text(f"{s_meter[fbin]:+03.0f}dB {decoder_text}")
-                            
                 fbins_to_decode = np.argsort(-s_meter)[:n_decoders]
                 decoders_sorted = sorted(decoders, key=lambda d: s_meter[d.fbin])
                 for fb in fbins_to_decode:
                     if fb not in current_bins_with_decoders:
                         weakest_decoder = decoders_sorted[0]
-                        if(s_meter[fb] > 2 + s_meter[weakest_decoder.fbin]):
+                        if(s_meter[fb] > 6 + s_meter[weakest_decoder.fbin]):
                             weakest_decoder.set_fbin(fb)
                             break
+     
+            if((display_idx % 10) == 0):
+                current_bins_with_decoders = [d.fbin for d in decoders]
+                for fbin in range(nf):
+                    if fbin not in current_bins_with_decoders:
+                        if (time.time() - last_updated[fbin] > 15):
+                            new_text = f"{s_meter[fbin]:+03.0f}dB {blank_text}"
+                            if(tickers[fbin].get_text != new_text):
+                                tickers[fbin].set_text(new_text)
+                for d in decoders:
+                    td = d.decoder.info_dict
+                    speed_info = ' '.join([f"{k}{v:5.3f}" for k,v in d.decoder.timeactual.items()]) if show_speed_info else ''
+                    decoder_text = f" {td['wpm']:3.0f}wpm  {speed_info} {td['morse']}  {td['text'].strip()}"
+                    new_text = f"{s_meter[fbin]:+03.0f}dB {decoder_text}"
+                    fbin = d.fbin
+                    if(tickers[fbin].get_text != new_text):
+                        tickers[fbin].set_text(new_text)
 
-            
+
             return spec_plot, *[d.keyline['line'] for d in decoders], *[ticker for ticker in tickers],
    
         threading.Thread(target = processing_loop, args = (hop_ms,) ).start()
