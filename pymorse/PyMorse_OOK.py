@@ -195,20 +195,19 @@ class UI_decoder:
         self.decoder = TimingDecoder(fbin)
         self.ticker = None
         self.keyline = None
-        self.s_meter = 0
         self.set_fbin(fbin)
 
     def set_fbin(self, fbin):
         self.fbin = fbin
-        if(self.ticker is not None):
-            self.ticker.set_text(' ' * len(self.decoder.info_dict['rendered_text']))
-            self.ticker.remove()
-        if(self.keyline is not None):
-            self.keyline['line'].remove()
         self.decoder.set_fbin(fbin)
-        self.ticker = self.axs[1].text(-0.15, fbin, '*')
         kld = np.zeros_like(self.timevals)
         self.keyline = {'data':kld, 'line':self.axs[0].plot(self.timevals, kld, color = 'white', drawstyle='steps-post')[0]}
+
+    def remove(self, fbin):
+        self.fbin = None
+        if(self.keyline is not None):
+            self.keyline['line'].remove()
+        self.decoder = None
 
 def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decoders, show_processing):
 
@@ -217,7 +216,6 @@ def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decod
         display_nt = int(DISPLAY_DUR * 1000 / hop_ms)
         waterfall = np.zeros((nf, display_nt))
         timevals = np.linspace(0, DISPLAY_DUR, display_nt)
-
         s_meter = np.zeros(nf)
         show_speed_info = False
 
@@ -231,6 +229,12 @@ def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decod
         
         spec_plot = axs[0].imshow(waterfall, origin = 'lower', aspect='auto', alpha = 1,
                                   vmin = 5,  vmax=25, interpolation = 'bilinear', extent=[0, DISPLAY_DUR, 0, nf])
+
+        blank_text = ' ' * (TICKER_FIELD_LENGTHS['MORSE'] + TICKER_FIELD_LENGTHS['TEXT'])
+        last_updated = [0] * nf
+        tickers = []
+        for fbin in range(nf):
+            tickers.append(axs[1].text(-0.15, fbin, '*'))
 
         last_hop = time.time()
         data_counter = 0
@@ -260,34 +264,38 @@ def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decod
             data_counter = 0
  
             spec_plot.set_data(waterfall)            
-            s_meter = np.maximum(s_meter * 0.95, waterfall[:, -1])
+            s_meter = np.maximum(s_meter * 0.995, waterfall[:, -1])
             spec_plot.set_array(waterfall)
             if(SHOW_KEYLINES):
                 for d in decoders:
-                    d.keyline['line'].set_ydata(d.keyline['data']) 
+                    d.keyline['line'].set_ydata(d.keyline['data'])
 
-            for d in decoders:
-                if(d is not None):
-                    td = d.decoder.info_dict
-                    s = s_meter[d.fbin]
-                    speed_info = ' '.join([f"{k}{v:5.3f}" for k,v in d.decoder.timeactual.items()]) if show_speed_info else ''
-                    text = f"{s:+03.0f}dB {td['wpm']:3.0f}wpm  {speed_info} {td['morse']}  {td['text'].strip()}"
-                    if(td['rendered_text'] != text):
-                        d.ticker.set_text(text) 
-                        td['rendered_text'] = text
-                           
             if((display_idx % 10) == 0):
+                current_bins_with_decoders = [d.fbin for d in decoders]
+                for fbin in range(nf):
+                    if fbin not in current_bins_with_decoders:
+                        if (time.time() - last_updated[fbin] > 15):
+                            tickers[fbin].set_text(blank_text)
+                            tickers[fbin].set_text(f"{s_meter[fbin]:+03.0f}dB {blank_text}")
+                for d in decoders:
+                    td = d.decoder.info_dict
+                    speed_info = ' '.join([f"{k}{v:5.3f}" for k,v in d.decoder.timeactual.items()]) if show_speed_info else ''
+                    decoder_text = f" {td['wpm']:3.0f}wpm  {speed_info} {td['morse']}  {td['text'].strip()}"
+                    fbin = d.fbin
+                    tickers[fbin].set_text(blank_text)
+                    tickers[fbin].set_text(f"{s_meter[fbin]:+03.0f}dB {decoder_text}")
+                            
                 fbins_to_decode = np.argsort(-s_meter)[:n_decoders]
                 decoders_sorted = sorted(decoders, key=lambda d: s_meter[d.fbin])
-                current_bins_with_decoders = [d.fbin for d in decoders]
                 for fb in fbins_to_decode:
                     if fb not in current_bins_with_decoders:
                         weakest_decoder = decoders_sorted[0]
                         if(s_meter[fb] > 2 + s_meter[weakest_decoder.fbin]):
                             weakest_decoder.set_fbin(fb)
                             break
+
             
-            return spec_plot, *[d.keyline['line'] for d in decoders], *[d.ticker for d in decoders],
+            return spec_plot, *[d.keyline['line'] for d in decoders], *[ticker for ticker in tickers],
    
         threading.Thread(target = processing_loop, args = (hop_ms,) ).start()
         ani = FuncAnimation(plt.gcf(), display_loop, interval = 0, frames = 100000,  blit=True)
@@ -304,7 +312,7 @@ def cli():
     args = parser.parse_args()
     input_device_keywords = args.inputcard_keywords.replace(' ','').split(',') if args.inputcard_keywords is not None else None
     df = args.df if args.df is not None else 40
-    freq_range = np.array(args.freq_range) if args.freq_range is not None else [200, 1800]
+    freq_range = np.array(args.freq_range) if args.freq_range is not None else [200, 800]
     n_decoders = args.n_decoders if args.n_decoders is not None else 3
     
     input_device_keywords = args.inputcard_keywords.replace(' ','').split(',') if args.inputcard_keywords is not None else None
