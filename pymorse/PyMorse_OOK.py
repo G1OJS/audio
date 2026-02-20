@@ -8,7 +8,7 @@ import argparse
 
 SHOW_KEYLINES = True
 SPEED = {'MAX':45, 'MIN':12, 'ALPHA':0.05}
-TICKER_FIELD_LENGTHS = {'MORSE':40, 'TEXT':30}
+TICKER_FIELD_LENGTHS = {'MORSE':30, 'TEXT':30}
 TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2, 'CHARSEP_WORDSEP':6, 'TIMEOUT':7.5}
 
 
@@ -189,9 +189,9 @@ class TimingDecoder:
         self.process_element(el)
 
 class UI_decoder:
-    def __init__(self, axs, fbin, timevals):
+    def __init__(self, ax, fbin, timevals):
         self.timevals = timevals
-        self.axs = axs
+        self.ax = ax
         self.decoder = TimingDecoder(fbin)
         self.ticker = None
         self.keyline = None
@@ -201,7 +201,7 @@ class UI_decoder:
         self.fbin = fbin
         self.decoder.set_fbin(fbin)
         kld = np.zeros_like(self.timevals)
-        self.keyline = {'data':kld, 'line':self.axs[0].plot(self.timevals, kld, color = 'white', drawstyle='steps-post')[0]}
+        self.keyline = {'data':kld, 'line':self.ax.plot(self.timevals, kld, color = 'white', drawstyle='steps-post')[0]}
 
     def remove(self, fbin):
         self.fbin = None
@@ -219,22 +219,32 @@ def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decod
         s_meter = np.zeros(nf)
         show_speed_info = False
 
-        fig, axs = plt.subplots(1,2, width_ratios=[1, 1], figsize = (15,3))
-        fig.suptitle("PyMorse by G1OJS", horizontalalignment = 'left', x = 0.1)
-        axs[1].set_ylim(0, nf)
-        axs[0].set_xticks([])
-        axs[0].set_yticks([])
-        axs[1].set_axis_off()
-        decoders = [UI_decoder(axs, fb, timevals) for fb in range(n_decoders)]
+        fig, axs = plt.subplots(1,2, width_ratios=[1, 1], figsize = (12,3))
+        fig.set_facecolor("lightgrey")
+        ax_wf, ax_tx = axs
+        box_wf = ax_wf.get_position()
+        box_wf.x0 = 0.1
+        box_wf.x1 = 0.45
+        box_tx = ax_tx.get_position()
+        box_tx.x0 = box_wf.x1
+        ax_wf.set_position(box_wf)
+        ax_tx.set_position(box_tx)
         
-        spec_plot = axs[0].imshow(waterfall, origin = 'lower', aspect='auto', alpha = 1,
+        fig.suptitle("PyMorse by G1OJS", horizontalalignment = 'left', x = 0.1)
+        ax_tx.set_ylim(0, nf)
+        ax_wf.set_xticks([])
+        ax_wf.set_yticks([])
+        ax_tx.set_axis_off()
+        decoders = [UI_decoder(ax_wf, fb, timevals) for fb in range(n_decoders)]
+        
+        spec_plot = ax_wf.imshow(waterfall, origin = 'lower', aspect='auto', alpha = 1,
                                   vmin = 5,  vmax=25, interpolation = 'bilinear', extent=[0, DISPLAY_DUR, 0, nf])
 
         blank_text = ' ' * (TICKER_FIELD_LENGTHS['MORSE'] + TICKER_FIELD_LENGTHS['TEXT'])
         last_updated = [0] * nf
         tickers = []
         for fbin in range(nf):
-            tickers.append(axs[1].text(-0.15, fbin, '*'))
+            tickers.append(ax_tx.text(0, fbin, ''))
 
         last_hop = time.time()
         data_counter = 0
@@ -255,7 +265,7 @@ def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decod
                 waterfall = np.roll(waterfall, -1, axis = 1)
                 waterfall[:, -1]  = inst_dB
                 data_counter += 1
-    
+
         def display_loop(display_idx):
             nonlocal data_counter, display_nt, display_decimate, spec_plot, s_meter, waterfall, decoders, show_speed_info
 
@@ -270,39 +280,32 @@ def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decod
                 for d in decoders:
                     d.keyline['line'].set_ydata(d.keyline['data'])
 
-            if((display_idx % 10) == 0):
+            if((display_idx % 20) == 0):
                 current_bins_with_decoders = [d.fbin for d in decoders]
                 fbins_to_decode = np.argsort(-s_meter)[:n_decoders]
                 decoders_sorted = sorted(decoders, key=lambda d: s_meter[d.fbin])
                 for fb in fbins_to_decode:
                     if fb not in current_bins_with_decoders:
                         weakest_decoder = decoders_sorted[0]
-                        if(s_meter[fb] > 6 + s_meter[weakest_decoder.fbin]):
+                        if(s_meter[fb] > 3 + s_meter[weakest_decoder.fbin]):
                             weakest_decoder.set_fbin(fb)
                             break
-     
+            
             if((display_idx % 10) == 0):
-                current_bins_with_decoders = [d.fbin for d in decoders]
-                for fbin in range(nf):
-                    if fbin not in current_bins_with_decoders:
-                        if (time.time() - last_updated[fbin] > 15):
-                            new_text = f"{s_meter[fbin]:+03.0f}dB {blank_text}"
-                            if(tickers[fbin].get_text != new_text):
-                                tickers[fbin].set_text(new_text)
                 for d in decoders:
                     td = d.decoder.info_dict
-                    speed_info = ' '.join([f"{k}{v:5.3f}" for k,v in d.decoder.timeactual.items()]) if show_speed_info else ''
-                    decoder_text = f" {td['wpm']:3.0f}wpm  {speed_info} {td['morse']}  {td['text'].strip()}"
-                    new_text = f"{s_meter[fbin]:+03.0f}dB {decoder_text}"
                     fbin = d.fbin
-                    if(tickers[fbin].get_text != new_text):
+                    speed_info = ' '.join([f"{k}{v:5.3f}" for k,v in d.decoder.timeactual.items()]) if show_speed_info else ''
+                    decoder_text = f" {td['wpm']:3.0f} wpm {speed_info} {td['morse']}  {td['text'].strip()}"
+                    new_text = f" {s_meter[fbin]:+03.0f}dB {decoder_text}"
+                    fbin = d.fbin
+                    if(tickers[fbin].get_text() != new_text):
                         tickers[fbin].set_text(new_text)
-
 
             return spec_plot, *[d.keyline['line'] for d in decoders], *[ticker for ticker in tickers],
    
         threading.Thread(target = processing_loop, args = (hop_ms,) ).start()
-        ani = FuncAnimation(plt.gcf(), display_loop, interval = 0, frames = 100000,  blit=True)
+        ani = FuncAnimation(plt.gcf(), display_loop, interval = 0, frames = 100000,  blit = True)
         plt.show()
 
 def cli():
@@ -323,8 +326,8 @@ def cli():
    # show_processing = args.show_processing if args.show_processing is not None else False
     show_processing = False
 
-    hop_ms = 5
-    display_decimate = 5
+    hop_ms = 10
+    display_decimate = 2
     run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decoders, show_processing)
 
 
