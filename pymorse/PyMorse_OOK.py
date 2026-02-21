@@ -7,7 +7,7 @@ import pyaudio
 import argparse
 
 SHOW_KEYLINES = True
-SPEED = {'MAX':45, 'MIN':12, 'ALPHA':0.05}
+SPEED = {'MAX':45, 'MIN':18, 'ALPHA':0.1}
 TICKER_FIELD_LENGTHS = {'MORSE':30, 'TEXT':30}
 TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2, 'CHARSEP_WORDSEP':6, 'TIMEOUT':7.5}
 
@@ -83,29 +83,14 @@ class Spectrum:
         self.window = np.hanning(fft_len)
         self.audio = Audio_in(input_device_keywords, sample_rate, fft_len, int(fft_len/8))
         time.sleep(0.5)
-        self.initialise_spectrum_vars()
-
-    def initialise_spectrum_vars(self):
-        self.sig_max = self.calc_spectrum()
-        self.noise = self.sig_max
+        self.noise = np.ones(self.nf) * 1e9
         self.snr_lin = np.zeros(self.nf)
-        self.sig_norm = np.zeros(self.nf)
-
-    def squelch(self, x, a, b):
-        f = np.where(x>a, x, a + b*(x-a))
-        return np.clip(f, 0, None)
 
     def calc_spectrum(self):
         z = np.fft.rfft(self.audio.audiobuff * self.window)[self.fBins]
-        return z.real*z.real + z.imag*z.imag
-        
-    def update_spectrum_vars(self):
-        pwr = self.calc_spectrum()
+        pwr = z.real*z.real + z.imag*z.imag
         self.noise = 0.9 * self.noise + 0.1 * np.minimum(self.noise*1.05, pwr)
         self.snr_lin = pwr / (self.noise + 0.01)
-        self.sig = self.squelch(self.snr_lin, 100, 10)
-        self.sig_max = np.maximum(self.sig_max * 0.85, self.sig)
-        self.sig_norm = self.sig / self.sig_max
 
 class TimingDecoder:
 
@@ -114,6 +99,7 @@ class TimingDecoder:
         self.timeactual = {'.':1, '`':1, '-':3, '_':3} # dot, intra-char silence, dash, inter-char silence
 
     def reset(self):
+        self.sig_max = 1
         self.keypos = 0
         self.keymoves = {'press_t': 0, 'lift_t': time.time()}
         self.morse_elements = ''
@@ -133,8 +119,10 @@ class TimingDecoder:
 
     def detect_transition(self, sig):
         t = time.time()
+        self.sig_max = np.maximum(self.sig_max * 0.95, sig)
+        sig = sig / self.sig_max
         
-        if(0 < self.keymoves['press_t'] < t - self.timespec['dot_short'] and sig < 0.4): # key -> up
+        if(0 < self.keymoves['press_t'] < t - self.timespec['dot_short'] and sig < 0.1): # key -> up
             mark_dur = t - self.keymoves['press_t']
             self.keymoves = {'press_t': 0, 'lift_t': t}
             self.last_lift_t = t
@@ -144,7 +132,7 @@ class TimingDecoder:
         if (t - self.last_lift_t > self.timespec['timeout']) and self.morse_elements:
             return False, False, True
         
-        if(0 < self.keymoves['lift_t'] and sig > 0.6): # key -> down
+        if(0 < self.keymoves['lift_t'] and sig > .995): # key -> down
             space_dur = t - self.keymoves['lift_t']
             self.keymoves = {'press_t': t, 'lift_t': 0}
             self.keypos = 1
@@ -264,9 +252,9 @@ class Fast_loop:
             else:
                 self.abort = True
             self.last_hop = time.time()
-            spectrum.update_spectrum_vars()
+            spectrum.calc_spectrum()
             for d in decoders:
-                d.step(spectrum.sig_norm)
+                d.step(spectrum.snr_lin)
             waterfall.step(10*np.log10(spectrum.snr_lin))
             self.data_counter += 1
 
@@ -294,7 +282,6 @@ class Slow_manager:
                 if age > 15:
                     ticker_obj.set_color('lightgrey')
                     
-
 def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decoders, show_processing):
     
         display_nt = int(DISPLAY_DUR * 1000 / hop_ms)
@@ -311,23 +298,19 @@ def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decod
         slow_mgr = Slow_manager(decoders, waterfall, tickers)
         fast_loop = Fast_loop(spectrum, hop_ms, decoders, waterfall)
 
-        def display_callback(frame):
+        def animation_callback(frame):
             while fast_loop.data_counter < display_decimate :
                 time.sleep(0)
             fast_loop.data_counter = 0
             spec_plot = waterfall.display()
             for d in decoders:
                 d.display(tickers)                
-            if not fast_loop.abort:
-                return animation_artists_list
-            print("Hop duration too short for cpu")
+            if fast_loop.abort:
+                print("Hop duration too short for cpu")
+            return animation_artists_list
 
-        ani = FuncAnimation(plt.gcf(), display_callback, interval = 0, frames = 100000,  blit = True)
+        ani = FuncAnimation(plt.gcf(), animation_callback, interval = 0, frames = 100000,  blit = True)
         plt.show()
-
-
-
-# to do - add ticker legacy in blue
 
 def cli():
     parser = argparse.ArgumentParser(prog='PyMorseRx', description = 'Command Line Morse decoder')
