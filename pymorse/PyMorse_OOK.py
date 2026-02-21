@@ -88,9 +88,7 @@ class Spectrum:
 
     def calc_spectrum(self):
         z = np.fft.rfft(self.audio.audiobuff * self.window)[self.fBins]
-        pwr = z.real*z.real + z.imag*z.imag
-        self.noise = 0.9 * self.noise + 0.1 * np.minimum(self.noise*1.05, pwr)
-        self.snr_lin = pwr / (self.noise + 0.01)
+        self.pwr = z.real*z.real + z.imag*z.imag
 
 class TimingDecoder:
 
@@ -99,7 +97,8 @@ class TimingDecoder:
         self.timeactual = {'.':1, '`':1, '-':3, '_':3} # dot, intra-char silence, dash, inter-char silence
 
     def reset(self):
-        self.sig_max = 1
+        self.sig_max = None
+        self.noise = None
         self.keypos = 0
         self.keymoves = {'press_t': 0, 'lift_t': time.time()}
         self.morse_elements = ''
@@ -119,23 +118,28 @@ class TimingDecoder:
 
     def detect_transition(self, sig):
         t = time.time()
-        self.sig_max = np.maximum(self.sig_max * 0.95, sig)
-        sig = sig / self.sig_max
-        
+        if(self.sig_max is None): self.sig_max = sig
+        if(self.noise is None): self.noise = sig/10
+        self.noise = 0.99 * self.noise + 0.01 * np.minimum(self.noise*1.05, sig)
+        self.sig_max = np.maximum(self.sig_max * 0.99, sig)
+        sig = (sig - self.noise) / (self.sig_max - self.noise)
+
+#        keypos = 'sig'
+        keypos = 'key'
         if(0 < self.keymoves['press_t'] < t - self.timespec['dot_short'] and sig < 0.1): # key -> up
             mark_dur = t - self.keymoves['press_t']
             self.keymoves = {'press_t': 0, 'lift_t': t}
             self.last_lift_t = t
-            self.keypos = 0
+            self.keypos = sig if keypos == 'sig' else 0
             return mark_dur, False, False
         
         if (t - self.last_lift_t > self.timespec['timeout']) and self.morse_elements:
             return False, False, True
         
-        if(0 < self.keymoves['lift_t'] and sig > .995): # key -> down
+        if(0 < self.keymoves['lift_t'] and sig > .6): # key -> down
             space_dur = t - self.keymoves['lift_t']
             self.keymoves = {'press_t': t, 'lift_t': 0}
-            self.keypos = 1
+            self.keypos = sig if keypos == 'sig' else 1
             return False, space_dur, False
         
         return False, False, False
@@ -186,8 +190,8 @@ class UI_decoder:
     def set_fbin(self, fbin):
         self.fbin = fbin
 
-    def step(self, sig_norm):
-        self.decoder.step(sig_norm[self.fbin])
+    def step(self, sig):
+        self.decoder.step(sig[self.fbin])
         self.keyline_data[:-1] = self.keyline_data[1:]
         self.keyline_data[-1] = 0.2 + 0.6 * self.decoder.keypos + self.fbin
 
@@ -207,7 +211,7 @@ class UI_waterfall:
         self.waterfall = np.zeros((nf, len(timevals)))
         self.s_meter = np.zeros(nf)
         self.spec_plot = axs[0].imshow(self.waterfall, origin = 'lower', aspect='auto', alpha = 1,
-                                  vmin = 5,  vmax=25, interpolation = 'bilinear', extent=[0, DISPLAY_DUR, 0, nf])
+                                  vmin = 5,  vmax=25, interpolation = 'none', extent=[0, DISPLAY_DUR, 0, nf])
     def step(self, newvals):
         self.waterfall[:, :-1] = self.waterfall[:, 1:]
         self.waterfall[:, -1]  = newvals
@@ -215,6 +219,8 @@ class UI_waterfall:
     def display(self):
         self.s_meter = np.maximum(self.s_meter * 0.995, self.waterfall[:, -1])
         self.spec_plot.set_array(self.waterfall)
+        vmax = np.max(self.waterfall)
+        self.spec_plot.set_clim(vmax = vmax, vmin = vmax - 20)
         return self.spec_plot
 
 def define_figure(nf):
@@ -253,9 +259,10 @@ class Fast_loop:
                 self.abort = True
             self.last_hop = time.time()
             spectrum.calc_spectrum()
+            pwr_dB = 10*np.log10(spectrum.pwr)
             for d in decoders:
-                d.step(spectrum.snr_lin)
-            waterfall.step(10*np.log10(spectrum.snr_lin))
+                d.step(spectrum.pwr)
+            waterfall.step(pwr_dB)
             self.data_counter += 1
 
 class Slow_manager:
@@ -309,7 +316,7 @@ def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decod
                 print("Hop duration too short for cpu")
             return animation_artists_list
 
-        ani = FuncAnimation(plt.gcf(), animation_callback, interval = 0, frames = 100000,  blit = True)
+        ani = FuncAnimation(plt.gcf(), animation_callback, interval = 30, frames = 100000,  blit = True)
         plt.show()
 
 def cli():
@@ -336,7 +343,7 @@ def cli():
 
 
 if __name__ == '__main__':
-    run(['Mic', 'CODEC'], [200,800],  df = 40, hop_ms = 10, display_decimate = 2, n_decoders = 6, show_processing = True)
+    run(['Mic', 'CODEC'], [200,800],  df = 40, hop_ms = 8, display_decimate = 2, n_decoders = 2, show_processing = True)
 
         
 
