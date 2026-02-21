@@ -240,9 +240,8 @@ def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decod
             tickers.append(ax_tx.text(0, fbin, ''))
 
         last_hop = time.time()
-        data_counter = 0
         def processing_loop(hop_ms):
-            nonlocal waterfall, last_hop, data_counter
+            nonlocal waterfall, last_hop
             while True:
                 delay = hop_ms/1000 - (time.time() - last_hop)
                 time.sleep(delay if delay > 0 else 0)
@@ -257,16 +256,10 @@ def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decod
                 inst_dB = 10*np.log10(spectrum.snr_lin)
                 waterfall = np.roll(waterfall, -1, axis = 1)
                 waterfall[:, -1]  = inst_dB
-                data_counter += 1
 
         def display_loop(display_idx):
-            nonlocal data_counter, display_nt, display_decimate, spec_plot, s_meter, waterfall, decoders, show_speed_info
+            nonlocal display_nt, display_decimate, spec_plot, s_meter, waterfall, decoders, show_speed_info
 
-            while data_counter < display_decimate :
-                time.sleep(0)
-            data_counter = 0
- 
-            spec_plot.set_data(waterfall)            
             s_meter = np.maximum(s_meter * 0.995, waterfall[:, -1])
             spec_plot.set_array(waterfall)
             if(SHOW_KEYLINES):
@@ -304,7 +297,7 @@ def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decod
             return spec_plot, *[d.keyline for d in decoders], *[ticker for ticker in tickers],
    
         threading.Thread(target = processing_loop, args = (hop_ms,) ).start()
-        ani = FuncAnimation(plt.gcf(), display_loop, interval = 0, frames = 100000,  blit = True)
+        ani = FuncAnimation(plt.gcf(), display_loop, interval = 10, frames = 100000,  blit = True)
         plt.show()
 
 def cli():
