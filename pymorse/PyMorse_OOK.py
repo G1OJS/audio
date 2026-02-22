@@ -91,8 +91,6 @@ class Spectrum:
 class TimingDecoder:
 
     def __init__(self):
-        self.sig_max = None
-        self.noise = None
         self.keypos = 'up'
         self.key_last_moved = time.time()
         self.element_buffer = ''
@@ -111,13 +109,7 @@ class TimingDecoder:
             self.timespec = {'dot_short':ts['DOT_SHORT']*tu, 'dot_long':ts['DOT_LONG']*tu,
                              'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_wordsep':ts['CHARSEP_WORDSEP']*tu, 'timeout':ts['TIMEOUT']*tu, }
 
-    def clockstep(self, sig):
-        if(self.sig_max is None): self.sig_max = sig
-        if(self.noise is None): self.noise = sig/10
-        self.noise = 0.99 * self.noise + 0.01 * np.minimum(self.noise*1.05, sig)
-        self.sig_max = np.maximum(self.sig_max * 0.99, sig)
-        sig = (sig - self.noise) / (self.sig_max - self.noise)
-        keypos_new = 'up' if sig <0.1 else 'down'
+    def clockstep(self, keypos_new):
         t = time.time()
         ts = self.timespec
         timeout = t - self.key_last_moved > ts['timeout']
@@ -153,10 +145,18 @@ class UI_channel:
         self.keyline = self.axs[0].plot(self.timevals, self.keyline_data, color = 'white', drawstyle='steps-post')[0]
         self.fbin = fbin
         self.quality_fast = 0
+        self.sig_max = None
+        self.noise = None
 
     def clockstep(self, sig):
         if self.quality_fast > 10:
-            self.decoder.clockstep(sig[self.fbin])
+            if(self.sig_max is None): self.sig_max = sig
+            if(self.noise is None): self.noise = sig/10
+            self.noise = 0.99 * self.noise + 0.01 * np.minimum(self.noise*1.05, sig)
+            self.sig_max = np.maximum(self.sig_max * 0.99, sig)
+            sig = (sig - self.noise) / (self.sig_max - self.noise)
+            keypos = 'up' if sig <0.15 else 'down'
+            self.decoder.clockstep(keypos)
         self.keyline_data[:-1] = self.keyline_data[1:]
         self.keyline_data[-1] = self.fbin
         self.keyline_data[-1] += 0.2 if self.decoder.keypos == 'up' else 0.8            
@@ -180,7 +180,7 @@ class UI_waterfall:
     def __init__(self, axs, nf,  timevals):
         self.data = np.zeros((nf, len(timevals)))
         self.spec_plot = axs[0].imshow(self.data, origin = 'lower', aspect='auto', alpha = 1,
-                                  vmin = 5,  vmax=25, interpolation = 'none', extent=[0, DISPLAY_DUR, 0, nf])
+                                  vmin = 5,  vmax=25, interpolation = 'bilinear', extent=[0, DISPLAY_DUR, 0, nf])
     def clockstep(self, newvals):
         self.data[:, :-1] = self.data[:, 1:]
         self.data[:, -1]  = newvals
@@ -190,26 +190,6 @@ class UI_waterfall:
         vmax = np.max(self.data)
         self.spec_plot.set_clim(vmax = vmax, vmin = vmax - 20)
         return self.spec_plot
-
-def define_figure(nf):
-    fig, axs = plt.subplots(1,2, width_ratios=[1, 1], figsize = (12,3))
-    fig.set_facecolor("lightgrey")
-    ax_wf, ax_tx = axs
-    box_wf = ax_wf.get_position()
-    box_wf.x0 = 0.1
-    box_wf.x1 = 0.45
-    box_tx = ax_tx.get_position()
-    box_tx.x0 = box_wf.x1
-    ax_wf.set_position(box_wf)
-    ax_tx.set_position(box_tx)
-    
-    fig.suptitle("PyMorse by G1OJS", horizontalalignment = 'left', x = 0.1)
-    ax_tx.set_ylim(0, nf)
-    ax_wf.set_xticks([])
-    ax_wf.set_yticks([])
-    ax_tx.set_axis_off()
-    
-    return fig, axs
 
 class Hot_loop:
     def __init__(self, spectrum, hop_ms, channels, waterfall):
@@ -231,22 +211,23 @@ class Hot_loop:
             waterfall.clockstep(pwr_dB)
             for ch in channels:
                 if(ch.active):
-                    ch.clockstep(spectrum.pwr)
+                    ch.clockstep(spectrum.pwr[ch.fbin])
             self.data_counter += 1
 
 class Channel_manager:
-    def __init__(self, channels, waterfall, tickers):
-        self.data_counter = 0
-        threading.Thread(target = self.loop, args = (channels, waterfall, tickers, ) ).start()
+    def __init__(self, channels, waterfall, n_decoders):
+        for ch in channels[:n_decoders]:
+            ch.active = True
+        threading.Thread(target = self.loop, args = (channels, waterfall, ) ).start()
         
-    def loop(self, channels, waterfall, tickers): 
+    def loop(self, channels, waterfall): 
         while True:
             time.sleep(1)
             quality = np.std(waterfall.data, axis = 1)
             weakest_decoder = [-1,1e6]
             for fbin, ch in enumerate(channels):
                 if ch.active:
-                    ch.quality_fast = np.std(waterfall.data[fbin][-100:])
+                    ch.quality_fast = np.std(waterfall.data[fbin][-75:])
                     if quality[fbin] < weakest_decoder[1]:
                         weakest_decoder[1] = quality[fbin]
                         weakest_decoder[0] = fbin
@@ -255,38 +236,56 @@ class Channel_manager:
             if not channels[best_fbin].active:
                 channels[best_fbin].active = True
                 channels[weakest_decoder[0]].active = False
+
+def define_figure(nf):
+    fig, axs = plt.subplots(1,2, width_ratios=[1, 1], figsize = (12,3))
+    fig.set_facecolor("lightgrey")
+    ax_wf, ax_tx = axs
+    box_wf = ax_wf.get_position()
+    box_wf.x0 = 0.1
+    box_wf.x1 = 0.45
+    box_tx = ax_tx.get_position()
+    box_tx.x0 = box_wf.x1
+    ax_wf.set_position(box_wf)
+    ax_tx.set_position(box_tx)
+    
+    fig.suptitle("PyMorse by G1OJS", horizontalalignment = 'left', x = 0.1)
+    ax_tx.set_ylim(0, nf)
+    ax_wf.set_xticks([])
+    ax_wf.set_yticks([])
+    ax_tx.set_axis_off()
+    
+    return fig, axs
                     
 def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decoders, show_processing):
     
-        display_nt = int(DISPLAY_DUR * 1000 / hop_ms)
-        timevals = np.linspace(0, DISPLAY_DUR, display_nt)
-        spectrum = Spectrum(input_device_keywords, df,  freq_range)
-        fig, axs = define_figure(spectrum.nf)
-        waterfall = UI_waterfall(axs, spectrum.nf, timevals)
-        channels = [UI_channel(axs, fb, timevals) for fb in range(spectrum.nf)]
-        for ch in channels[:n_decoders]:
-            ch.active = True
+    display_nt = int(DISPLAY_DUR * 1000 / hop_ms)
+    timevals = np.linspace(0, DISPLAY_DUR, display_nt)
+    spectrum = Spectrum(input_device_keywords, df,  freq_range)
+    fig, axs = define_figure(spectrum.nf)
+    waterfall = UI_waterfall(axs, spectrum.nf, timevals)
+    channels = [UI_channel(axs, fb, timevals) for fb in range(spectrum.nf)]
+    spec_plot = waterfall.display()
+    keylines = [ch.keyline for ch in channels]
+    tickers  = [{'ticker': axs[1].text(0, ch.fbin, ''), 'last_updated': time.time()} for ch in channels]
+    animation_artists_list = spec_plot, *keylines, *[ticker['ticker'] for ticker in tickers]
+
+    ch_mgr = Channel_manager(channels, waterfall, n_decoders)
+    hot_loop = Hot_loop(spectrum, hop_ms, channels, waterfall)
+
+    def animation_callback(frame):
+        while hot_loop.data_counter < display_decimate :
+            time.sleep(0)
+        hot_loop.data_counter = 0
         spec_plot = waterfall.display()
-        keylines = [ch.keyline for ch in channels]
-        tickers  = [{'ticker': axs[1].text(0, ch.fbin, ''), 'last_updated': time.time()} for ch in channels]
-        animation_artists_list = spec_plot, *keylines, *[ticker['ticker'] for ticker in tickers]
-        
-        ch_mgr = Channel_manager(channels, waterfall, tickers)
-        hot_loop = Hot_loop(spectrum, hop_ms, channels, waterfall)
+        for ch in channels:
+            ch.display(tickers)                
+        if hot_loop.abort:
+            print("Hop duration too short for cpu")
+        return animation_artists_list
 
-        def animation_callback(frame):
-            while hot_loop.data_counter < display_decimate :
-                time.sleep(0)
-            hot_loop.data_counter = 0
-            spec_plot = waterfall.display()
-            for ch in channels:
-                ch.display(tickers)                
-            if hot_loop.abort:
-                print("Hop duration too short for cpu")
-            return animation_artists_list
-
-        ani = FuncAnimation(plt.gcf(), animation_callback, interval = 30, frames = 100000,  blit = True)
-        plt.show()
+    ani = FuncAnimation(plt.gcf(), animation_callback, interval = 30, frames = 100000,  blit = True)
+    plt.show()
 
 def cli():
     parser = argparse.ArgumentParser(prog='PyMorseRx', description = 'Command Line Morse decoder')
