@@ -149,13 +149,13 @@ class UI_channel:
         self.noise = None
 
     def clockstep(self, sig):
-        if self.quality_fast > 10:
+        if self.quality_fast > 7:
             if(self.sig_max is None): self.sig_max = sig
             if(self.noise is None): self.noise = sig/10
-            self.noise = 0.99 * self.noise + 0.01 * np.minimum(self.noise*1.05, sig)
-            self.sig_max = np.maximum(self.sig_max * 0.99, sig)
+            self.noise = 0.995 * self.noise + 0.005 * np.minimum(self.noise*1.05, sig)
+            self.sig_max = np.maximum(self.sig_max * 0.995, sig)
             sig = (sig - self.noise) / (self.sig_max - self.noise)
-            keypos = 'up' if sig <0.15 else 'down'
+            keypos = 'up' if sig <0.1 else 'down'
             self.decoder.clockstep(keypos)
         self.keyline_data[:-1] = self.keyline_data[1:]
         self.keyline_data[-1] = self.fbin
@@ -311,7 +311,7 @@ def cli():
 
 
 if __name__ == '__main__':
-    run(['Mic', 'CODEC'], [200,800],  df = 40, hop_ms = 8, display_decimate = 2, n_decoders = 3, show_processing = True)
+    run(['Mic', 'CODEC'], [200,800],  df = 40, hop_ms = 12, display_decimate = 2, n_decoders = 3, show_processing = True)
 
         
 
