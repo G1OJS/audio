@@ -117,7 +117,7 @@ class TimingDecoder:
         self.noise = 0.99 * self.noise + 0.01 * np.minimum(self.noise*1.05, sig)
         self.sig_max = np.maximum(self.sig_max * 0.99, sig)
         sig = (sig - self.noise) / (self.sig_max - self.noise)
-        keypos_new = 'up' if sig <0.05 else 'down'
+        keypos_new = 'up' if sig <0.1 else 'down'
         t = time.time()
         ts = self.timespec
         timeout = t - self.key_last_moved > ts['timeout']
@@ -152,9 +152,11 @@ class UI_channel:
         self.keyline_data = np.zeros_like(self.timevals)
         self.keyline = self.axs[0].plot(self.timevals, self.keyline_data, color = 'white', drawstyle='steps-post')[0]
         self.fbin = fbin
+        self.quality_fast = 0
 
     def clockstep(self, sig):
-        self.decoder.clockstep(sig[self.fbin])
+        if self.quality_fast > 10:
+            self.decoder.clockstep(sig[self.fbin])
         self.keyline_data[:-1] = self.keyline_data[1:]
         self.keyline_data[-1] = self.fbin
         self.keyline_data[-1] += 0.2 if self.decoder.keypos == 'up' else 0.8            
@@ -244,6 +246,7 @@ class Channel_manager:
             weakest_decoder = [-1,1e6]
             for fbin, ch in enumerate(channels):
                 if ch.active:
+                    ch.quality_fast = np.std(waterfall.data[fbin][-100:])
                     if quality[fbin] < weakest_decoder[1]:
                         weakest_decoder[1] = quality[fbin]
                         weakest_decoder[0] = fbin
