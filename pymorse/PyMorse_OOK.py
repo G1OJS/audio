@@ -42,8 +42,6 @@ class Audio_in:
         self.start_audio_in(sample_rate, frames_perbuff)
         
     def find_device(self, device_str_contains):
-        if(not device_str_contains): #(this check probably shouldn't be needed - check calling code)
-            return
         print(f"[Audio] Looking for audio device matching {device_str_contains}")
         for dev_idx in range(self.pya.get_device_count()):
             name = self.pya.get_device_info_by_index(dev_idx)['name']
@@ -93,135 +91,151 @@ class Spectrum:
 class TimingDecoder:
 
     def __init__(self):
-        self.reset()
-        self.timeactual = {'.':1, '`':1, '-':3, '_':3} # dot, intra-char silence, dash, inter-char silence
-
-    def reset(self):
-        self.sig_max = None
-        self.noise = None
-        self.keypos = 0
-        self.keymoves = {'press_t': 0, 'lift_t': time.time()}
-        self.morse_elements = ''
-        self.last_lift_t = 0
-        self.info_dict = {'wpm':16, 'morse':' ' * TICKER_FIELD_LENGTHS['MORSE'], 'text':' ' * TICKER_FIELD_LENGTHS['TEXT'], 'rendered_text':''}
+        self.keypos = 'up'
+        self.key_last_moved = time.time()
+        self.element_buffer = ''
+        self.wpm = 16
         self.update_speed(1.2/16)
+        self.morse = ''
+        self.text = ''
 
     def update_speed(self, mark_dur):
         if(1.2/SPEED['MAX'] < mark_dur < 3*1.2/SPEED['MIN']):
             wpm_new = 1.2/mark_dur if mark_dur < 1.2/SPEED['MIN'] else 3 * 1.2/mark_dur
             wpm_new = np.clip(wpm_new, SPEED['MIN'], SPEED['MAX'])
-            self.info_dict['wpm'] = SPEED['ALPHA'] * wpm_new + (1-SPEED['ALPHA']) * self.info_dict['wpm']
-            tu = 1.2/self.info_dict['wpm']
+            self.wpm = SPEED['ALPHA'] * wpm_new + (1-SPEED['ALPHA']) * self.wpm
+            tu = 1.2/self.wpm
             ts = TIMESPEC
             self.timespec = {'dot_short':ts['DOT_SHORT']*tu, 'dot_long':ts['DOT_LONG']*tu,
                              'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_wordsep':ts['CHARSEP_WORDSEP']*tu, 'timeout':ts['TIMEOUT']*tu, }
 
-    def detect_transition(self, sig):
+    def clockstep(self, keypos_new):
         t = time.time()
-        if(self.sig_max is None): self.sig_max = sig
-        if(self.noise is None): self.noise = sig/10
-        self.noise = 0.99 * self.noise + 0.01 * np.minimum(self.noise*1.05, sig)
-        self.sig_max = np.maximum(self.sig_max * 0.99, sig)
-        sig = (sig - self.noise) / (self.sig_max - self.noise)
-
-#        keypos = 'sig'
-        keypos = 'key'
-        if(0 < self.keymoves['press_t'] < t - self.timespec['dot_short'] and sig < 0.1): # key -> up
-            mark_dur = t - self.keymoves['press_t']
-            self.keymoves = {'press_t': 0, 'lift_t': t}
-            self.last_lift_t = t
-            self.keypos = sig if keypos == 'sig' else 0
-            return mark_dur, False, False
-        
-        if (t - self.last_lift_t > self.timespec['timeout']) and self.morse_elements:
-            return False, False, True
-        
-        if(0 < self.keymoves['lift_t'] and sig > .6): # key -> down
-            space_dur = t - self.keymoves['lift_t']
-            self.keymoves = {'press_t': t, 'lift_t': 0}
-            self.keypos = sig if keypos == 'sig' else 1
-            return False, space_dur, False
-        
-        return False, False, False
-    
-    def classify_duration(self, mark_dur, space_dur, is_idle):
         ts = self.timespec
-        if(is_idle):
-            return '/'
-        elif(mark_dur > ts['dot_short']):
-            return '.' if mark_dur < ts['dot_long'] else '-'
-        elif(space_dur > ts['charsep_short']):
-            return '_' if space_dur < ts['charsep_wordsep'] else '/'
-        return '`' if space_dur else ''
+        timeout = t - self.key_last_moved > ts['timeout']
+        if(keypos_new != self.keypos or timeout):
+            dur = t - self.key_last_moved
+            if dur > ts['dot_short']:
+                self.keypos = keypos_new
+                self.key_last_moved = t
+                if keypos_new == 'down' or (timeout and self.element_buffer):
+                    el = None if dur < ts['charsep_short'] else (' ' if dur < ts['charsep_wordsep'] else '/')
+                else:
+                    el = '.' if dur < ts['dot_long'] else '-'
+                    self.update_speed(dur)
+                if(el is not None):
+                    if(el in [' ', '/']):
+                        char = MORSE.get(self.element_buffer, '')
+                        self.element_buffer = ''
+                        space = '' if el == ' ' else ' '
+                        self.text = (self.text + char + space)[-TICKER_FIELD_LENGTHS['TEXT']:]
+                    else:
+                        self.element_buffer = self.element_buffer + el 
+                    self.morse = (self.morse + el)[-TICKER_FIELD_LENGTHS['TEXT']:]
+                if(timeout):
+                    self.element_buffer = ''
 
-    def update_durations(self, mark_dur, space_dur, el):
-        if el in self.timeactual:
-            self.timeactual[el] = 0.99*self.timeactual[el] + 0.01* (mark_dur if mark_dur else space_dur) / (1.2/self.info_dict['wpm'])
-
-    def process_element(self, el):
-        if(el =='`'):
-            return
-        if(el not in ['_', '/'] or self.info_dict['morse'][-1] not in [' ', '/']):
-            self.info_dict['morse'] = (self.info_dict['morse'] + el.replace('_',' '))[-TICKER_FIELD_LENGTHS['MORSE']:]
-        if el in ['.','-']:
-            self.morse_elements = self.morse_elements + el
-        elif(el in ['_', '/']):
-            char = MORSE.get(self.morse_elements, '')
-            self.morse_elements = ''
-            wdspace = ' ' if el == '/' and not self.info_dict['text'].endswith(' ') else ''
-            self.info_dict['text'] = ( self.info_dict['text'] + char + wdspace)[-TICKER_FIELD_LENGTHS['TEXT']:]
-                
-    def step(self, sig):
-        mark_dur, space_dur, is_idle = self.detect_transition(sig)
-        el = self.classify_duration(mark_dur, space_dur, is_idle)
-        self.update_durations(mark_dur, space_dur, el)
-        self.update_speed(mark_dur)
-        self.process_element(el)
-
-class UI_decoder:
+class UI_channel:
     def __init__(self, axs, fbin, timevals):
         self.timevals = timevals
         self.axs = axs
         self.decoder = TimingDecoder()
+        self.active = False
         self.keyline_data = np.zeros_like(self.timevals)
         self.keyline = self.axs[0].plot(self.timevals, self.keyline_data, color = 'white', drawstyle='steps-post')[0]
         self.fbin = fbin
+        self.quality_fast = 0
+        self.sig_max = None
+        self.noise = None
 
-    def set_fbin(self, fbin):
-        self.fbin = fbin
-
-    def step(self, sig):
-        self.decoder.step(sig[self.fbin])
+    def clockstep(self, sig):
+        if self.quality_fast > 10:
+            if(self.sig_max is None): self.sig_max = sig
+            if(self.noise is None): self.noise = sig/10
+            self.noise = 0.99 * self.noise + 0.01 * np.minimum(self.noise*1.05, sig)
+            self.sig_max = np.maximum(self.sig_max * 0.99, sig)
+            sig = (sig - self.noise) / (self.sig_max - self.noise)
+            keypos = 'up' if sig <0.15 else 'down'
+            self.decoder.clockstep(keypos)
         self.keyline_data[:-1] = self.keyline_data[1:]
-        self.keyline_data[-1] = 0.2 + 0.6 * self.decoder.keypos + self.fbin
+        self.keyline_data[-1] = self.fbin
+        self.keyline_data[-1] += 0.2 if self.decoder.keypos == 'up' else 0.8            
 
     def display(self, tickers):
-        self.keyline.set_ydata(self.keyline_data)
-        td = self.decoder.info_dict
-        new_text = f" {td['wpm']:3.0f} wpm {td['morse']}  {td['text'].strip()}"
         ticker_obj = tickers[self.fbin]['ticker']
-        if(ticker_obj.get_text() != new_text):
-            ticker_obj.set_text(new_text)
-            ticker_obj.set_color('green')
-            tickers[self.fbin]['last_updated'] = time.time()
+        if(self.active):
+            self.keyline.set_ydata(self.keyline_data)
+            self.keyline.set_linestyle('solid')
+            d = self.decoder
+            new_text = f" {d.wpm:3.0f} wpm {d.morse}  {d.text}"
+            if(ticker_obj.get_text() != new_text):
+                ticker_obj.set_text(new_text)
+                ticker_obj.set_color('black')
+                tickers[self.fbin]['last_updated'] = time.time()
+        else:
+            ticker_obj.set_color('blue')
+            self.keyline.set_linestyle('none')
             
-
 class UI_waterfall:
     def __init__(self, axs, nf,  timevals):
-        self.waterfall = np.zeros((nf, len(timevals)))
-        self.s_meter = np.zeros(nf)
-        self.spec_plot = axs[0].imshow(self.waterfall, origin = 'lower', aspect='auto', alpha = 1,
-                                  vmin = 5,  vmax=25, interpolation = 'none', extent=[0, DISPLAY_DUR, 0, nf])
-    def step(self, newvals):
-        self.waterfall[:, :-1] = self.waterfall[:, 1:]
-        self.waterfall[:, -1]  = newvals
+        self.data = np.zeros((nf, len(timevals)))
+        self.spec_plot = axs[0].imshow(self.data, origin = 'lower', aspect='auto', alpha = 1,
+                                  vmin = 5,  vmax=25, interpolation = 'bilinear', extent=[0, DISPLAY_DUR, 0, nf])
+    def clockstep(self, newvals):
+        self.data[:, :-1] = self.data[:, 1:]
+        self.data[:, -1]  = newvals
 
     def display(self):
-        self.s_meter = np.maximum(self.s_meter * 0.995, self.waterfall[:, -1])
-        self.spec_plot.set_array(self.waterfall)
-        vmax = np.max(self.waterfall)
+        self.spec_plot.set_array(self.data)
+        vmax = np.max(self.data)
         self.spec_plot.set_clim(vmax = vmax, vmin = vmax - 20)
         return self.spec_plot
+
+class Hot_loop:
+    def __init__(self, spectrum, hop_ms, channels, waterfall):
+        self.data_counter = 0
+        self.abort = False
+        self.last_hop = time.time()
+        threading.Thread(target = self.loop, args = (spectrum, hop_ms, channels, waterfall,) ).start()
+        
+    def loop(self, spectrum, hop_ms, channels, waterfall):
+        while True:
+            delay = hop_ms/1000 - (time.time() - self.last_hop)
+            if(delay > 0):
+                time.sleep(delay)
+            else:
+                self.abort = True
+            self.last_hop = time.time()
+            spectrum.calc_spectrum()
+            pwr_dB = 10*np.log10(spectrum.pwr)
+            waterfall.clockstep(pwr_dB)
+            for ch in channels:
+                if(ch.active):
+                    ch.clockstep(spectrum.pwr[ch.fbin])
+            self.data_counter += 1
+
+class Channel_manager:
+    def __init__(self, channels, waterfall, n_decoders):
+        for ch in channels[:n_decoders]:
+            ch.active = True
+        threading.Thread(target = self.loop, args = (channels, waterfall, ) ).start()
+        
+    def loop(self, channels, waterfall): 
+        while True:
+            time.sleep(1)
+            quality = np.std(waterfall.data, axis = 1)
+            weakest_decoder = [-1,1e6]
+            for fbin, ch in enumerate(channels):
+                if ch.active:
+                    ch.quality_fast = np.std(waterfall.data[fbin][-75:])
+                    if quality[fbin] < weakest_decoder[1]:
+                        weakest_decoder[1] = quality[fbin]
+                        weakest_decoder[0] = fbin
+                    quality[fbin] = 0
+            best_fbin = np.argmax(quality)
+            if not channels[best_fbin].active:
+                channels[best_fbin].active = True
+                channels[weakest_decoder[0]].active = False
 
 def define_figure(nf):
     fig, axs = plt.subplots(1,2, width_ratios=[1, 1], figsize = (12,3))
@@ -242,82 +256,36 @@ def define_figure(nf):
     ax_tx.set_axis_off()
     
     return fig, axs
-
-class Fast_loop:
-    def __init__(self, spectrum, hop_ms, decoders, waterfall):
-        self.data_counter = 0
-        self.abort = False
-        self.last_hop = time.time()
-        threading.Thread(target = self.loop, args = (spectrum, hop_ms, decoders, waterfall,) ).start()
-        
-    def loop(self, spectrum, hop_ms, decoders, waterfall):
-        while True:
-            delay = hop_ms/1000 - (time.time() - self.last_hop)
-            if(delay > 0):
-                time.sleep(delay)
-            else:
-                self.abort = True
-            self.last_hop = time.time()
-            spectrum.calc_spectrum()
-            pwr_dB = 10*np.log10(spectrum.pwr)
-            for d in decoders:
-                d.step(spectrum.pwr)
-            waterfall.step(pwr_dB)
-            self.data_counter += 1
-
-class Slow_manager:
-    def __init__(self, decoders, waterfall, tickers):
-        self.data_counter = 0
-        threading.Thread(target = self.loop, args = (decoders, waterfall, tickers, ) ).start()
-        
-    def loop(self, decoders, waterfall, tickers): 
-        while True:
-            time.sleep(1)
-            source_decoder = decoders[np.argmin([waterfall.s_meter[d.fbin] for d in decoders])]
-            source_decoder_s = waterfall.s_meter[source_decoder.fbin]
-            for d in decoders:
-                waterfall.s_meter[d.fbin] = 0
-            target = np.argmax(waterfall.s_meter)
-            if(waterfall.s_meter[target] > 3 + source_decoder_s):
-                source_decoder.set_fbin(target)
-                source_decoder.decoder.reset()
-            for ticker in tickers:
-                ticker_obj = ticker['ticker']
-                age = time.time() - ticker['last_updated']
-                if age > 5:
-                    ticker_obj.set_color('blue')
-                if age > 15:
-                    ticker_obj.set_color('lightgrey')
                     
 def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decoders, show_processing):
     
-        display_nt = int(DISPLAY_DUR * 1000 / hop_ms)
-        timevals = np.linspace(0, DISPLAY_DUR, display_nt)
-        spectrum = Spectrum(input_device_keywords, df,  freq_range)
-        fig, axs = define_figure(spectrum.nf)
-        waterfall = UI_waterfall(axs, spectrum.nf, timevals)
-        decoders = [UI_decoder(axs, fb, timevals) for fb in range(n_decoders)]
+    display_nt = int(DISPLAY_DUR * 1000 / hop_ms)
+    timevals = np.linspace(0, DISPLAY_DUR, display_nt)
+    spectrum = Spectrum(input_device_keywords, df,  freq_range)
+    fig, axs = define_figure(spectrum.nf)
+    waterfall = UI_waterfall(axs, spectrum.nf, timevals)
+    channels = [UI_channel(axs, fb, timevals) for fb in range(spectrum.nf)]
+    spec_plot = waterfall.display()
+    keylines = [ch.keyline for ch in channels]
+    tickers  = [{'ticker': axs[1].text(0, ch.fbin, ''), 'last_updated': time.time()} for ch in channels]
+    animation_artists_list = spec_plot, *keylines, *[ticker['ticker'] for ticker in tickers]
+
+    ch_mgr = Channel_manager(channels, waterfall, n_decoders)
+    hot_loop = Hot_loop(spectrum, hop_ms, channels, waterfall)
+
+    def animation_callback(frame):
+        while hot_loop.data_counter < display_decimate :
+            time.sleep(0)
+        hot_loop.data_counter = 0
         spec_plot = waterfall.display()
-        keylines = [d.keyline for d in decoders]
-        tickers  = [{'ticker': axs[1].text(0, fbin, ''), 'last_updated': time.time()} for fbin in range(spectrum.nf)]
-        animation_artists_list = spec_plot, *keylines, *[ticker['ticker'] for ticker in tickers]
-        
-        slow_mgr = Slow_manager(decoders, waterfall, tickers)
-        fast_loop = Fast_loop(spectrum, hop_ms, decoders, waterfall)
+        for ch in channels:
+            ch.display(tickers)                
+        if hot_loop.abort:
+            print("Hop duration too short for cpu")
+        return animation_artists_list
 
-        def animation_callback(frame):
-            while fast_loop.data_counter < display_decimate :
-                time.sleep(0)
-            fast_loop.data_counter = 0
-            spec_plot = waterfall.display()
-            for d in decoders:
-                d.display(tickers)                
-            if fast_loop.abort:
-                print("Hop duration too short for cpu")
-            return animation_artists_list
-
-        ani = FuncAnimation(plt.gcf(), animation_callback, interval = 30, frames = 100000,  blit = True)
-        plt.show()
+    ani = FuncAnimation(plt.gcf(), animation_callback, interval = 30, frames = 100000,  blit = True)
+    plt.show()
 
 def cli():
     parser = argparse.ArgumentParser(prog='PyMorseRx', description = 'Command Line Morse decoder')
@@ -343,7 +311,7 @@ def cli():
 
 
 if __name__ == '__main__':
-    run(['Mic', 'CODEC'], [200,800],  df = 40, hop_ms = 8, display_decimate = 2, n_decoders = 2, show_processing = True)
+    run(['Mic', 'CODEC'], [200,800],  df = 40, hop_ms = 8, display_decimate = 2, n_decoders = 3, show_processing = True)
 
         
 
