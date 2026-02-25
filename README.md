@@ -1,8 +1,10 @@
 # PyMorseLive
 
-Simple multi-channel timing-based morse decoder written in Python.
+Simple multi-channel timing-based morse decoder written in ~300 lines of Python. 
 
-https://github.com/user-attachments/assets/e211ac2e-db48-4be7-a0fe-034320a241fd
+Still working on getting noise suppression right!
+
+https://github.com/user-attachments/assets/349ecdd0-8cf6-495d-8bd2-a526c643ba61
 
 ## Installation
 Install from PyPI using
