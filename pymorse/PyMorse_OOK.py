@@ -6,6 +6,8 @@ import threading
 import pyaudio
 import argparse
 
+WF_RECENT_QUALITY_SQUELCH_LENGTH = 50  
+RECENT_QUALITY_SQUELCH_THRESH = 5
 WF_MODE = 'wf_wipe'
 SHOW_KEYLINES = True
 SPEED = {'MAX':45, 'MIN':18, 'ALPHA':0.1}
@@ -134,7 +136,7 @@ class UI_channel:
         self.noise = None
 
     def clockstep(self, sig, waterfall_idx):
-        if self.quality > 7:
+        if self.quality > RECENT_QUALITY_SQUELCH_THRESH:
             if(self.sig_max is None): self.sig_max = sig
             if(self.noise is None): self.noise = sig/10
             self.noise = 0.995 * self.noise + 0.005 * np.minimum(self.noise*1.05, sig)
@@ -163,22 +165,26 @@ class UI_channel:
         else:
             ticker_obj.set_color('blue')
             self.keyline.set_linestyle('none')
-            
+                     
 class UI_waterfall:
+
     def __init__(self, axs, nf,  timevals):
         self.nt = len(timevals)
         self.idx = 0
         self.data = np.zeros((nf, self.nt))
+        self.recent_idx = 0
+        self.recent_data = np.zeros((nf, WF_RECENT_QUALITY_SQUELCH_LENGTH))
         self.spec_plot = axs[0].imshow(self.data, origin = 'lower', aspect='auto', alpha = 1,
                                   vmin = 5,  vmax=25, interpolation = 'bilinear', extent=[0, DISPLAY_DUR, 0, nf])
     def clockstep(self, newvals):
         if(WF_MODE == 'wf_wipe'):
-            self.data[:, self.idx] = newvals
             self.idx = (self.idx + 1) % self.nt
         else:
-            self.idx = -1
             self.data[:, :-1] = self.data[:, 1:]
-            self.data[:, self.idx]  = newvals
+            self.idx = -1
+        self.data[:, self.idx]  = newvals
+        self.recent_data[:, self.recent_idx] = newvals
+        self.recent_idx = (self.recent_idx + 1) % WF_RECENT_QUALITY_SQUELCH_LENGTH
 
     def display(self):
         self.spec_plot.set_array(self.data)
@@ -218,7 +224,7 @@ class Channel_manager:
     def loop(self, channels, waterfall): 
         while True:
             time.sleep(1)
-            quality = np.std(waterfall.data, axis = 1)
+            quality = np.std(waterfall.recent_data, axis = 1)
             weakest_decoder = [-1,1e6]
             for fbin, ch in enumerate(channels):
                 if ch.active:
