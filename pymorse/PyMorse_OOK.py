@@ -87,8 +87,9 @@ class TimingDecoder:
         self.morse = ''
         self.text = ''
 
-    def clean_morse(self, morse):
-        for pat in ['......', ' . ', '/. ', ' ./', '------']:
+    def clean_morse(self, morse, strong = False):
+        patterns = ['......', ' . ', '/. ', ' ./', '/. .', '------'] + ['./', '/.', '. '] if strong else []
+        for pat in patterns:
             morse = morse.replace(pat,'')
 
     def update_speed(self, mark_dur):
@@ -101,10 +102,11 @@ class TimingDecoder:
             self.timespec = {'dot_short':ts['DOT_SHORT']*tu, 'dot_long':ts['DOT_LONG']*tu,
                              'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_wordsep':ts['CHARSEP_WORDSEP']*tu, 'timeout':ts['TIMEOUT']*tu, }
 
-    def flush_morse(self, el = '/'):
+    def morse_to_text(self, el = '/'):
         if(self.element_buffer):
-            self.clean_morse(self.element_buffer)
-            self.clean_morse(self.morse)
+            apply_strong_filtering = self.text[-2:] in [' E','EE']
+            self.clean_morse(self.element_buffer, strong = apply_strong_filtering)
+            self.clean_morse(self.morse, strong = apply_strong_filtering)
             char = MORSE.get(self.element_buffer, '')
             if(char == '' and FILTER_UNKNOWN_CHARS):
                 self.morse = self.morse.replace(self.element_buffer,'')
@@ -128,7 +130,7 @@ class TimingDecoder:
                     self.update_speed(dur)
                 if(el is not None):
                     if(el in [' ', '/']):
-                        self.flush_morse(el)
+                        self.morse_to_text(el)
                     else:
                         self.element_buffer = self.element_buffer + el
                     if(el != '/' or (not self.morse.endswith('/') and not self.morse.endswith(' '))):
@@ -172,10 +174,11 @@ class UI_channel:
             self.keyline.set_ydata(self.keyline_data)
             self.keyline.set_linestyle('solid')
         else:
-            d.flush_morse()
+            d.morse_to_text()
             ticker_obj.set_color('blue')
             self.keyline.set_linestyle('none')
-        new_text = f" {d.wpm:3.0f} wpm {d.morse}  {d.text}"
+        m, t = int(TICKER_FIELD_LENGTHS['MORSE']), int(TICKER_FIELD_LENGTHS['TEXT'])
+        new_text = f" {d.wpm:3.0f} wpm {d.morse:>{m}}  {d.text:<{t}}"
         if(ticker_obj.get_text() != new_text):
             ticker_obj.set_text(new_text)
             ticker_obj.set_color('black')
