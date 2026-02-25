@@ -6,32 +6,20 @@ import threading
 import pyaudio
 import argparse
 
+WF_MODE = 'wf_wipe'
 SHOW_KEYLINES = True
 SPEED = {'MAX':45, 'MIN':18, 'ALPHA':0.1}
 TICKER_FIELD_LENGTHS = {'MORSE':30, 'TEXT':30}
 TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2, 'CHARSEP_WORDSEP':6, 'TIMEOUT':7.5}
-
-
 DISPLAY_DUR = 3
 MORSE = {
-".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D",
-".": "E",     "..-.": "F",  "--.": "G",   "....": "H",
-"..": "I",    ".---": "J",  "-.-": "K",   ".-..": "L",
-"--": "M",    "-.": "N",    "---": "O",   ".--.": "P",
-"--.-": "Q",  ".-.": "R",   "...": "S",   "-": "T",
-"..-": "U",   "...-": "V",  ".--": "W",   "-..-": "X",
-"-.--": "Y",  "--..": "Z",
-
-"-----": "0", ".----": "1", "..---": "2", "...--": "3",
-"....-": "4", ".....": "5", "-....": "6", "--...": "7",
-"---..": "8", "----.": "9",
-
-"-..-.": "/", "..--": "Ü",
-
-".-.-.": "_AR_", "..--..": "?", "-...-": "_BK_",
-"...-.-": "_SK_", "..-.-.": "_UR_", "-.--.": "_KN_"
-
-}
+".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D", ".": "E", "..-.": "F",  "--.": "G",   "....": "H",
+"..": "I",    ".---": "J",  "-.-": "K",   ".-..": "L", "--": "M",    "-.": "N",    "---": "O",   ".--.": "P",
+"--.-": "Q",  ".-.": "R",   "...": "S",   "-": "T", "..-": "U",   "...-": "V",  ".--": "W",   "-..-": "X",
+"-.--": "Y",  "--..": "Z", "-----": "0", ".----": "1", "..---": "2", "...--": "3",
+"....-": "4", ".....": "5", "-....": "6", "--...": "7", "---..": "8", "----.": "9",
+"-..-.": "/", "..--": "Ü", ".-.-.": "_AR_", "..--..": "?", "-...-": "_BK_",
+"...-.-": "_SK_", "..-.-.": "_UR_", "-.--.": "_KN_"}
     
 class Audio_in:
     
@@ -80,9 +68,6 @@ class Spectrum:
         print(self.params)
         self.window = np.hanning(fft_len)
         self.audio = Audio_in(input_device_keywords, sample_rate, fft_len, int(fft_len/8))
-        time.sleep(0.5)
-        self.noise = np.ones(self.nf) * 1e9
-        self.snr_lin = np.zeros(self.nf)
 
     def calc_spectrum(self):
         z = np.fft.rfft(self.audio.audiobuff * self.window)[self.fBins]
@@ -144,12 +129,12 @@ class UI_channel:
         self.keyline_data = np.zeros_like(self.timevals)
         self.keyline = self.axs[0].plot(self.timevals, self.keyline_data, color = 'white', drawstyle='steps-post')[0]
         self.fbin = fbin
-        self.quality_fast = 0
+        self.quality = 0
         self.sig_max = None
         self.noise = None
 
-    def clockstep(self, sig):
-        if self.quality_fast > 7:
+    def clockstep(self, sig, waterfall_idx):
+        if self.quality > 7:
             if(self.sig_max is None): self.sig_max = sig
             if(self.noise is None): self.noise = sig/10
             self.noise = 0.995 * self.noise + 0.005 * np.minimum(self.noise*1.05, sig)
@@ -157,9 +142,12 @@ class UI_channel:
             sig = (sig - self.noise) / (self.sig_max - self.noise)
             keypos = 'up' if sig <0.1 else 'down'
             self.decoder.clockstep(keypos)
-        self.keyline_data[:-1] = self.keyline_data[1:]
-        self.keyline_data[-1] = self.fbin
-        self.keyline_data[-1] += 0.2 if self.decoder.keypos == 'up' else 0.8            
+        yval = self.fbin + (0.2 if self.decoder.keypos == 'up' else 0.8)  
+        if(WF_MODE == 'wf_wipe'):
+            self.keyline_data[waterfall_idx] = yval
+        else:
+            self.keyline_data[:-1] = self.keyline_data[1:]
+            self.keyline_data[-1] = yval
 
     def display(self, tickers):
         ticker_obj = tickers[self.fbin]['ticker']
@@ -178,12 +166,19 @@ class UI_channel:
             
 class UI_waterfall:
     def __init__(self, axs, nf,  timevals):
-        self.data = np.zeros((nf, len(timevals)))
+        self.nt = len(timevals)
+        self.idx = 0
+        self.data = np.zeros((nf, self.nt))
         self.spec_plot = axs[0].imshow(self.data, origin = 'lower', aspect='auto', alpha = 1,
                                   vmin = 5,  vmax=25, interpolation = 'bilinear', extent=[0, DISPLAY_DUR, 0, nf])
     def clockstep(self, newvals):
-        self.data[:, :-1] = self.data[:, 1:]
-        self.data[:, -1]  = newvals
+        if(WF_MODE == 'wf_wipe'):
+            self.data[:, self.idx] = newvals
+            self.idx = (self.idx + 1) % self.nt
+        else:
+            self.idx = -1
+            self.data[:, :-1] = self.data[:, 1:]
+            self.data[:, self.idx]  = newvals
 
     def display(self):
         self.spec_plot.set_array(self.data)
@@ -211,7 +206,7 @@ class Hot_loop:
             waterfall.clockstep(pwr_dB)
             for ch in channels:
                 if(ch.active):
-                    ch.clockstep(spectrum.pwr[ch.fbin])
+                    ch.clockstep(spectrum.pwr[ch.fbin], waterfall.idx)
             self.data_counter += 1
 
 class Channel_manager:
@@ -227,7 +222,8 @@ class Channel_manager:
             weakest_decoder = [-1,1e6]
             for fbin, ch in enumerate(channels):
                 if ch.active:
-                    ch.quality_fast = np.std(waterfall.data[fbin][-75:])
+                    idx = waterfall.idx
+                    ch.quality = quality[fbin]
                     if quality[fbin] < weakest_decoder[1]:
                         weakest_decoder[1] = quality[fbin]
                         weakest_decoder[0] = fbin
