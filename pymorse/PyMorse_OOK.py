@@ -88,7 +88,7 @@ class TimingDecoder:
         self.text = ''
 
     def clean_morse(self, morse):
-        for pat in ['. ', ' .', ' . ', '/. ', ' ./']:
+        for pat in ['......', ' . ', '/. ', ' ./']:
             morse = morse.replace(pat,'')
 
     def update_speed(self, mark_dur):
@@ -131,7 +131,7 @@ class TimingDecoder:
                         self.flush_morse(el)
                     else:
                         self.element_buffer = self.element_buffer + el
-                    if(el != '/' or not self.morse.endswith('/')):
+                    if(el != '/' or (not self.morse.endswith('/') and not self.morse.endswith(' '))):
                         self.morse = (self.morse + el)[-TICKER_FIELD_LENGTHS['TEXT']:]
                 if(timeout):
                     self.element_buffer = ''
