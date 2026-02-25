@@ -6,8 +6,9 @@ import threading
 import pyaudio
 import argparse
 
+FILTER_UNKNOWN_CHARS = True
 WF_RECENT_QUALITY_SQUELCH_LENGTH = 50  
-RECENT_QUALITY_SQUELCH_THRESH = 5
+RECENT_QUALITY_SQUELCH_THRESH = 6
 WF_MODE = 'wf_wipe'
 SHOW_KEYLINES = True
 SPEED = {'MAX':45, 'MIN':18, 'ALPHA':0.1}
@@ -86,6 +87,10 @@ class TimingDecoder:
         self.morse = ''
         self.text = ''
 
+    def clean_morse(self, morse):
+        for pat in ['. ', ' .', ' . ', '/. ', ' ./']:
+            morse = morse.replace(pat,'')
+
     def update_speed(self, mark_dur):
         if(1.2/SPEED['MAX'] < mark_dur < 3*1.2/SPEED['MIN']):
             wpm_new = 1.2/mark_dur if mark_dur < 1.2/SPEED['MIN'] else 3 * 1.2/mark_dur
@@ -95,6 +100,17 @@ class TimingDecoder:
             ts = TIMESPEC
             self.timespec = {'dot_short':ts['DOT_SHORT']*tu, 'dot_long':ts['DOT_LONG']*tu,
                              'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_wordsep':ts['CHARSEP_WORDSEP']*tu, 'timeout':ts['TIMEOUT']*tu, }
+
+    def flush_morse(self, el = '/'):
+        if(self.element_buffer):
+            self.clean_morse(self.element_buffer)
+            self.clean_morse(self.morse)
+            char = MORSE.get(self.element_buffer, '')
+            if(char == '' and FILTER_UNKNOWN_CHARS):
+                self.morse = self.morse.replace(self.element_buffer,'')
+            space = '' if el == ' ' else ' '
+            self.text = (self.text + char + space)[-TICKER_FIELD_LENGTHS['TEXT']:]
+            self.element_buffer = ''
 
     def clockstep(self, keypos_new):
         t = time.time()
@@ -112,13 +128,11 @@ class TimingDecoder:
                     self.update_speed(dur)
                 if(el is not None):
                     if(el in [' ', '/']):
-                        char = MORSE.get(self.element_buffer, '')
-                        self.element_buffer = ''
-                        space = '' if el == ' ' else ' '
-                        self.text = (self.text + char + space)[-TICKER_FIELD_LENGTHS['TEXT']:]
+                        self.flush_morse(el)
                     else:
-                        self.element_buffer = self.element_buffer + el 
-                    self.morse = (self.morse + el)[-TICKER_FIELD_LENGTHS['TEXT']:]
+                        self.element_buffer = self.element_buffer + el
+                    if(el != '/' or not self.morse.endswith('/')):
+                        self.morse = (self.morse + el)[-TICKER_FIELD_LENGTHS['TEXT']:]
                 if(timeout):
                     self.element_buffer = ''
 
@@ -153,18 +167,20 @@ class UI_channel:
 
     def display(self, tickers):
         ticker_obj = tickers[self.fbin]['ticker']
+        d = self.decoder
         if(self.active):
             self.keyline.set_ydata(self.keyline_data)
             self.keyline.set_linestyle('solid')
-            d = self.decoder
-            new_text = f" {d.wpm:3.0f} wpm {d.morse}  {d.text}"
-            if(ticker_obj.get_text() != new_text):
-                ticker_obj.set_text(new_text)
-                ticker_obj.set_color('black')
-                tickers[self.fbin]['last_updated'] = time.time()
         else:
+            d.flush_morse()
             ticker_obj.set_color('blue')
             self.keyline.set_linestyle('none')
+        new_text = f" {d.wpm:3.0f} wpm {d.morse}  {d.text}"
+        if(ticker_obj.get_text() != new_text):
+            ticker_obj.set_text(new_text)
+            ticker_obj.set_color('black')
+            tickers[self.fbin]['last_updated'] = time.time()
+
                      
 class UI_waterfall:
 
@@ -238,6 +254,7 @@ class Channel_manager:
             if not channels[best_fbin].active:
                 channels[best_fbin].active = True
                 channels[weakest_decoder[0]].active = False
+
 
 def define_figure(nf):
     fig, axs = plt.subplots(1,2, width_ratios=[1, 1], figsize = (12,3))
