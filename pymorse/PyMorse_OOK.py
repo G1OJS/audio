@@ -179,7 +179,7 @@ class UI_channel:
             self.keyline.set_ydata(self.keyline_data)
             self.keyline.set_linestyle('solid')
         else:
-            d.morse_to_text(' ')
+            d.morse_to_text('/')
             ticker_obj.set_color('blue')
             self.keyline.set_linestyle('none')
         m, t = int(TICKER_FIELD_LENGTHS['MORSE']), int(TICKER_FIELD_LENGTHS['TEXT'])
