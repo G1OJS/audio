@@ -23,6 +23,10 @@ MORSE = {
 "....-": "4", ".....": "5", "-....": "6", "--...": "7", "---..": "8", "----.": "9",
 "-..-.": "/", "..--": "Ü", ".-.-.": "_AR_", "..--..": "?", "-...-": "_BK_",
 "...-.-": "_SK_", "..-.-.": "_UR_", "-.--.": "_KN_"}
+
+def debug(text):
+    with open('PyMorse.txt', 'a') as f:
+        f.write(f"{txt}\n")
     
 class Audio_in:
     
@@ -87,11 +91,6 @@ class TimingDecoder:
         self.morse = ''
         self.text = ''
 
-    def clean_morse(self, morse, strong = False):
-        patterns = ['......', ' . ', '/. ', ' ./', '/. .', '------'] + ['./', '/.', '. '] if strong else []
-        for pat in patterns:
-            morse = morse.replace(pat,'')
-
     def update_speed(self, mark_dur):
         if(1.2/SPEED['MAX'] < mark_dur < 3*1.2/SPEED['MIN']):
             wpm_new = 1.2/mark_dur if mark_dur < 1.2/SPEED['MIN'] else 3 * 1.2/mark_dur
@@ -102,14 +101,18 @@ class TimingDecoder:
             self.timespec = {'dot_short':ts['DOT_SHORT']*tu, 'dot_long':ts['DOT_LONG']*tu,
                              'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_wordsep':ts['CHARSEP_WORDSEP']*tu, 'timeout':ts['TIMEOUT']*tu, }
 
-    def morse_to_text(self, el = '/'):
+    def morse_to_text(self, el):
         if(self.element_buffer):
-            apply_strong_filtering = self.text[-2:] in [' E','EE']
-            self.clean_morse(self.element_buffer, strong = apply_strong_filtering)
-            self.clean_morse(self.morse, strong = apply_strong_filtering)
-            char = MORSE.get(self.element_buffer, '')
+            if (el == '/'):
+                word = self.morse.split('/')[-1].lstrip()
+                if '-' not in word and word not in ['.... ..', '.... .', '... . .', '... .... .']:
+                    self.morse = self.morse.replace(self.element_buffer,'')
+                    self.element_buffer = ''
+                    return
+            char = MORSE.get(self.element_buffer.strip(), '')
             if(char == '' and FILTER_UNKNOWN_CHARS):
-                self.morse = self.morse.replace(self.element_buffer,'')
+                trailing_slash = '/' if self.element_buffer.endswith('/') else ''
+                self.morse = self.morse.replace(self.element_buffer,'') + trailing_slash
             space = '' if el == ' ' else ' '
             self.text = (self.text + char + space)[-TICKER_FIELD_LENGTHS['TEXT']:]
             self.element_buffer = ''
@@ -133,10 +136,9 @@ class TimingDecoder:
                         self.morse_to_text(el)
                     else:
                         self.element_buffer = self.element_buffer + el
-                    if(el != '/' or (not self.morse.endswith('/') and not self.morse.endswith(' '))):
-                        self.morse = (' '*TICKER_FIELD_LENGTHS['MORSE'] + self.morse + el)[-TICKER_FIELD_LENGTHS['MORSE']:]
+                    self.morse = (' '*TICKER_FIELD_LENGTHS['MORSE'] + self.morse + el)[-TICKER_FIELD_LENGTHS['MORSE']:]
                 if(timeout):
-                    self.element_buffer = ''
+                    self.element_buffer = '/'
 
 class UI_channel:
     def __init__(self, axs, fbin, timevals):
@@ -174,7 +176,7 @@ class UI_channel:
             self.keyline.set_ydata(self.keyline_data)
             self.keyline.set_linestyle('solid')
         else:
-            d.morse_to_text()
+            d.morse_to_text(' ')
             ticker_obj.set_color('blue')
             self.keyline.set_linestyle('none')
         m, t = int(TICKER_FIELD_LENGTHS['MORSE']), int(TICKER_FIELD_LENGTHS['TEXT'])
@@ -302,8 +304,8 @@ def run(input_device_keywords, freq_range, df, hop_ms, display_decimate, n_decod
         spec_plot = waterfall.display()
         for ch in channels:
             ch.display(tickers)                
-        if hot_loop.abort:
-            print("Hop duration too short for cpu")
+      #  if hot_loop.abort:
+      #      print("Hop duration too short for cpu")
         return animation_artists_list
 
     ani = FuncAnimation(plt.gcf(), animation_callback, interval = 30, frames = 100000,  blit = True)
