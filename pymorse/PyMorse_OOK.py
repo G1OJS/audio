@@ -6,14 +6,13 @@ import threading
 import pyaudio
 import argparse
 
-FILTER_UNKNOWN_CHARS = True
 WF_RECENT_QUALITY_SQUELCH_LENGTH = 50  
 RECENT_QUALITY_SQUELCH_THRESH = 6
 WF_MODE = 'wf_wipe'
 SHOW_KEYLINES = True
 SPEED = {'MAX':45, 'MIN':18, 'ALPHA':0.1}
 TICKER_FIELD_LENGTHS = {'MORSE':30, 'TEXT':30}
-TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2, 'CHARSEP_WORDSEP':6, 'TIMEOUT':7.5}
+TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2, 'CHARSEP_WORDSEP':6}
 DISPLAY_DUR = 3
 MORSE = {
 ".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D", ".": "E", "..-.": "F",  "--.": "G",   "....": "H",
@@ -99,49 +98,45 @@ class TimingDecoder:
             tu = 1.2/self.wpm
             ts = TIMESPEC
             self.timespec = {'dot_short':ts['DOT_SHORT']*tu, 'dot_long':ts['DOT_LONG']*tu,
-                             'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_wordsep':ts['CHARSEP_WORDSEP']*tu, 'timeout':ts['TIMEOUT']*tu, }
+                             'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_wordsep':ts['CHARSEP_WORDSEP']*tu}
 
-    def cosmetic_scrap_last_buffer(self):
-        trailing_slash = '/' if self.element_buffer.endswith('/') else ''
-        self.morse = self.morse.replace(self.element_buffer,'') + trailing_slash
+    def build_character(self, el):
+        self.element_buffer = self.element_buffer + el
+        self.morse = (' '*TICKER_FIELD_LENGTHS['MORSE'] + self.morse + el)[-TICKER_FIELD_LENGTHS['MORSE']:]
 
-    def morse_to_text(self, el):
-        if(self.element_buffer):
-            if (el == '/'):
-                word = self.morse.split('/')[-1].lstrip()
-                if '-' not in word and word not in ['.... ..', '.... .', '... . .', '... .... .']:
-                    self.cosmetic_scrap_last_buffer()
-                    self.element_buffer = ''
-                    return
-            char = MORSE.get(self.element_buffer.strip(), '')
-            if(char == '' and FILTER_UNKNOWN_CHARS):
-                self.cosmetic_scrap_last_buffer()
-            space = '' if el == ' ' else ' '
-            self.text = (self.text + char + space)[-TICKER_FIELD_LENGTHS['TEXT']:]
-            self.element_buffer = ''
+    def complete_character(self):
+        char = MORSE.get(self.element_buffer.strip(), '')
+        self.morse = (' '*TICKER_FIELD_LENGTHS['MORSE'] + self.morse + ' ')[-TICKER_FIELD_LENGTHS['MORSE']:]
+        self.text = (self.text + char)[-TICKER_FIELD_LENGTHS['TEXT']:]
+        self.element_buffer = ''
+
+    def complete_word(self):
+        morse_word = self.morse.split('/')[-1].lstrip()
+        if '-' not in morse_word and morse_word not in ['.... ..', '.... .', '... . .', '... .... .']:
+            self.morse = '/'.join(self.morse.split('/')[:-1])
+            self.text = ' '.join(self.text.split()[:-1])
+        else:
+            self.morse = self.morse + '/'
+            self.text = self.text + ' '
 
     def clockstep(self, keypos_new):
         t = time.time()
+        dur = t - self.key_last_moved
         ts = self.timespec
-        timeout = t - self.key_last_moved > ts['timeout']
-        if(keypos_new != self.keypos or timeout):
-            dur = t - self.key_last_moved
-            if dur > ts['dot_short']:
-                self.keypos = keypos_new
-                self.key_last_moved = t
-                if keypos_new == 'down' or (timeout and self.element_buffer):
-                    el = None if dur < ts['charsep_short'] else (' ' if dur < ts['charsep_wordsep'] else '/')
-                else:
-                    el = '.' if dur < ts['dot_long'] else '-'
+        if keypos_new != self.keypos:
+            self.key_last_moved = t
+            self.keypos = keypos_new
+            if self.keypos == 'up':
+                if dur > ts['dot_short']:
+                    self.build_character('.' if dur < ts['dot_long'] else '-')
                     self.update_speed(dur)
-                if(el is not None):
-                    if(el in [' ', '/']):
-                        self.morse_to_text(el)
-                    else:
-                        self.element_buffer = self.element_buffer + el
-                    self.morse = (' '*TICKER_FIELD_LENGTHS['MORSE'] + self.morse + el)[-TICKER_FIELD_LENGTHS['MORSE']:]
-                if(timeout):
-                    self.element_buffer = '/'
+            if self.keypos == 'down':
+                if dur > ts['charsep_short'] and self.element_buffer:
+                    self.complete_character()
+        if dur > ts['charsep_wordsep'] and not self.text.endswith(' '):
+            self.complete_character()
+            self.complete_word()
+
 
 class UI_channel:
     def __init__(self, axs, fbin, timevals):
@@ -179,7 +174,7 @@ class UI_channel:
             self.keyline.set_ydata(self.keyline_data)
             self.keyline.set_linestyle('solid')
         else:
-            d.morse_to_text('/')
+            #d.morse_to_text('/')
             ticker_obj.set_color('blue')
             self.keyline.set_linestyle('none')
         m, t = int(TICKER_FIELD_LENGTHS['MORSE']), int(TICKER_FIELD_LENGTHS['TEXT'])
