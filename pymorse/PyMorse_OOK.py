@@ -101,18 +101,21 @@ class TimingDecoder:
             self.timespec = {'dot_short':ts['DOT_SHORT']*tu, 'dot_long':ts['DOT_LONG']*tu,
                              'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_wordsep':ts['CHARSEP_WORDSEP']*tu, 'timeout':ts['TIMEOUT']*tu, }
 
+    def cosmetic_scrap_last_buffer(self):
+        trailing_slash = '/' if self.element_buffer.endswith('/') else ''
+        self.morse = self.morse.replace(self.element_buffer,'') + trailing_slash
+
     def morse_to_text(self, el):
         if(self.element_buffer):
             if (el == '/'):
                 word = self.morse.split('/')[-1].lstrip()
                 if '-' not in word and word not in ['.... ..', '.... .', '... . .', '... .... .']:
-                    self.morse = self.morse.replace(self.element_buffer,'')
+                    self.cosmetic_scrap_last_buffer()
                     self.element_buffer = ''
                     return
             char = MORSE.get(self.element_buffer.strip(), '')
             if(char == '' and FILTER_UNKNOWN_CHARS):
-                trailing_slash = '/' if self.element_buffer.endswith('/') else ''
-                self.morse = self.morse.replace(self.element_buffer,'') + trailing_slash
+                self.cosmetic_scrap_last_buffer()
             space = '' if el == ' ' else ' '
             self.text = (self.text + char + space)[-TICKER_FIELD_LENGTHS['TEXT']:]
             self.element_buffer = ''
