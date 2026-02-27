@@ -23,7 +23,7 @@ MORSE = {
 "-.--": "Y",  "--..": "Z", "-----": "0", ".----": "1", "..---": "2", "...--": "3",
 "....-": "4", ".....": "5", "-....": "6", "--...": "7", "---..": "8", "----.": "9",
 "-..-.": "/", "..--": "Ü", ".-.-.": "_AR_", "..--..": "?", "-...-": "_BK_",
-"...-.-": "_SK_", "..-.-.": "_UR_", "-.--.": "_KN_"}
+"...-.-": "_SK_", "..-.-.": "_UR_", "-.--.": "_KN_", "-.-.--.-": "_CQ_"}
 
 def debug(text):
     with open('PyMorse.txt', 'a') as f:
@@ -89,11 +89,13 @@ class TimingDecoder:
         self.key_last_moved = time.time()
         self.element_buffer = ''
         self.wpm = 16
-        self.update_speed(1.2/16)
         self.morse = ''
         self.text = ''
+        self.update_speed(1.2/16)
 
     def update_speed(self, mark_dur):
+        if('TTT' in self.text):
+            self.wpm = SPEED['MIN']
         if(1.2/SPEED['MAX'] < mark_dur < 3*1.2/SPEED['MIN']):
             wpm_new = 1.2/mark_dur if mark_dur < 1.2/SPEED['MIN'] else 3 * 1.2/mark_dur
             wpm_new = np.clip(wpm_new, SPEED['MIN'], SPEED['MAX'])
@@ -143,15 +145,15 @@ class TimingDecoder:
 
 
 class UI_channel:
-    def __init__(self, axs, fbin, timevals, ticker, last_updated, unknown_chars):
+    def __init__(self, axs, fbin, ticker, last_updated, unknown_chars):
         self.ticker = ticker
         self.last_updated = last_updated
-        self.timevals = timevals
         self.axs = axs
         self.decoder = TimingDecoder(unknown_chars)
         self.active = False
-        self.keyline_data = np.zeros_like(self.timevals)
-        self.keyline = self.axs[0].plot(self.timevals, self.keyline_data, color = 'white', drawstyle='steps-post')[0]
+        timevals = np.linspace(0, DISPLAY_DUR, int(DISPLAY_DUR * 1000 / HOP_MS))
+        self.keyline_data = np.zeros_like(timevals)
+        self.keyline = self.axs[0].plot(timevals, self.keyline_data, color = 'white', drawstyle='steps-post')[0]
         self.fbin = fbin
         self.quality = 0
         self.sig_max = None
@@ -199,8 +201,8 @@ class UI_channel:
                      
 class UI_waterfall:
 
-    def __init__(self, axs, nf,  timevals):
-        self.nt = len(timevals)
+    def __init__(self, axs, nf):
+        self.nt = int(DISPLAY_DUR * 1000 / HOP_MS)
         self.idx = 0
         self.data = np.zeros((nf, self.nt))
         self.recent_idx = 0
@@ -275,30 +277,24 @@ def define_figure(nf):
     fig.set_facecolor("lightgrey")
     ax_wf, ax_tx = axs
     box_wf = ax_wf.get_position()
-    box_wf.x0 = 0.1
-    box_wf.x1 = 0.45
+    box_wf.x0, box_wf.x1 = 0.1, 0.45
     box_tx = ax_tx.get_position()
     box_tx.x0 = box_wf.x1
     ax_wf.set_position(box_wf)
     ax_tx.set_position(box_tx)
-    
     fig.suptitle("PyMorse by G1OJS", horizontalalignment = 'left', x = 0.1)
     ax_tx.set_ylim(0, nf)
     ax_wf.set_xticks([])
     ax_wf.set_yticks([])
     ax_tx.set_axis_off()
-    
     return fig, axs
                     
 def run(input_device_keywords, freq_range, df, n_decoders, unknown_chars):
-    
-    display_nt = int(DISPLAY_DUR * 1000 / HOP_MS)
-    timevals = np.linspace(0, DISPLAY_DUR, display_nt)
     spectrum = Spectrum(input_device_keywords, df,  freq_range)
     fig, axs = define_figure(spectrum.nf)
-    waterfall = UI_waterfall(axs, spectrum.nf, timevals)
+    waterfall = UI_waterfall(axs, spectrum.nf)
     spec_plot = waterfall.display()
-    channels = [UI_channel(axs, fb, timevals, axs[1].text(0, fb, ''), time.time(), unknown_chars) for fb in range(spectrum.nf)]
+    channels = [UI_channel(axs, fb, axs[1].text(0, fb, ''), time.time(), unknown_chars) for fb in range(spectrum.nf)]
     keylines = [ch.keyline for ch in channels]
     ch_mgr = Channel_manager(channels, waterfall, n_decoders)
     hot_loop = Hot_loop(spectrum, channels, waterfall)
@@ -329,7 +325,7 @@ def cli():
     run(input_device_keywords, args.freq_range, args.df, args.n_decoders, args.unknown_chars)
 
 if __name__ == '__main__':
-    run(['Mic', 'CODEC'], [200,800], df = 40, n_decoders = 3, unknown_chars = 'hide')
+    run(['Mic', 'CODEC'], [200,800], df = 40, n_decoders = 3, unknown_chars = 'promote')
 
 
 
