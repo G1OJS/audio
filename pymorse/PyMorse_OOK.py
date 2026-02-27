@@ -91,6 +91,7 @@ class TimingDecoder:
         self.wpm = 16
         self.morse = ''
         self.text = ''
+        self.max_charlen = np.max([len(k) for k in MORSE.keys()])
         self.update_speed(1.2/16)
 
     def update_speed(self, mark_dur):
@@ -114,16 +115,15 @@ class TimingDecoder:
         self.element_buffer = ''
 
     def complete_word(self):
+        self.complete_character()
         if self.morse.endswith('/'):
             return
-        self.complete_character()
         morse_word = self.morse.split('/')[-1].strip()
         if '-' not in morse_word and morse_word not in ['.... ..', '.... .', '... . .', '... .... .']:
             self.morse = '/'.join(self.morse.split('/')[:-1])
             self.text = ' '.join(self.text.split()[:-1])
-        else:
-            self.morse = self.morse.rstrip() + '/'
-            self.text = self.text + ' '
+        self.morse = self.morse.rstrip() + '/'
+        self.text = self.text + ' '
 
     def clockstep(self, keypos_new):
         t = time.time()
@@ -136,6 +136,8 @@ class TimingDecoder:
                 if dur > ts['dot_short']:
                     self.element_buffer = self.element_buffer + ('.' if dur < ts['dot_long'] else '-')
                     self.update_speed(dur)
+            if(len(self.element_buffer)>self.max_charlen):
+                self.complete_character()
             if self.keypos == 'down':
                 if dur > ts['charsep_short'] and self.element_buffer:
                     self.complete_character()
@@ -318,14 +320,14 @@ def cli():
     parser.add_argument('-df', '--df', help = 'Frequency step, Hz', default = 40) 
     parser.add_argument('-fr', '--freq_range', help = 'Frequency range Hz e.g. [600,800]', default = [200, 800]) 
     parser.add_argument('-n', '--n_decoders', help = 'Number of decoders', default = 3) 
-    parser.add_argument('-u','--unknown_chars', help = 'Hide, keep, promote unknown characters', default = 'promote') 
+    parser.add_argument('-u','--unknown_chars', help = 'Action on unknown character', nargs = '?', choices = ['keep','hide','promote'], default = 'hide', const = 'hide') 
     
     args = parser.parse_args()
     input_device_keywords = args.inputcard_keywords.replace(' ','').split(',')
     run(input_device_keywords, args.freq_range, args.df, args.n_decoders, args.unknown_chars)
 
 if __name__ == '__main__':
-    run(['Mic', 'CODEC'], [200,800], df = 40, n_decoders = 3, unknown_chars = 'promote')
+    run(['Mic', 'CODEC'], [200,800], df = 40, n_decoders = 3, unknown_chars = 'hide')
 
 
 
