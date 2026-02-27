@@ -191,14 +191,14 @@ class UI_channel:
             self.keyline.set_ydata(self.keyline_data)
             self.keyline.set_linestyle('solid')
         else:
-            self.ticker.set_color('blue')
+            self.ticker.set_color('black')
             self.keyline.set_linestyle('none')
         m, t = int(TICKER_FIELD_LENGTHS['MORSE']), int(TICKER_FIELD_LENGTHS['TEXT'])
         morse = (' ' * m + d.morse + d.element_buffer)[-m:]
         new_text = f" {d.wpm:3.0f} wpm | {morse:<{m}} | {d.text[-t:]:<{t}}"
         if(self.ticker.get_text() != new_text):
             self.ticker.set_text(new_text)
-            self.ticker.set_color('black')
+            self.ticker.set_color('blue')
             self.last_updated = time.time()
                      
 class UI_waterfall:
