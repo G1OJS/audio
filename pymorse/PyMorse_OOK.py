@@ -14,6 +14,8 @@ SPEED = {'MAX':45, 'MIN':18, 'ALPHA':0.1}
 TICKER_FIELD_LENGTHS = {'MORSE':30, 'TEXT':30}
 TIMESPEC = {'DOT_SHORT':0.65, 'DOT_LONG':2, 'CHARSEP_SHORT':2, 'CHARSEP_WORDSEP':6}
 DISPLAY_DUR = 3
+HOP_MS = 12
+DISPLAY_DECIMATE = 2
 MORSE = {
 ".-": "A",    "-...": "B",  "-.-.": "C",  "-..": "D", ".": "E", "..-.": "F",  "--.": "G",   "....": "H",
 "..": "I",    ".---": "J",  "-.-": "K",   ".-..": "L", "--": "M",    "-.": "N",    "---": "O",   ".--.": "P",
@@ -81,7 +83,8 @@ class Spectrum:
 
 class TimingDecoder:
 
-    def __init__(self):
+    def __init__(self, unknown_chars):
+        self.unknown_chars = unknown_chars
         self.keypos = 'up'
         self.key_last_moved = time.time()
         self.element_buffer = ''
@@ -101,12 +104,14 @@ class TimingDecoder:
                              'charsep_short':ts['CHARSEP_SHORT']*tu, 'charsep_wordsep':ts['CHARSEP_WORDSEP']*tu}
 
     def complete_character(self):
-        self.text = (self.text + MORSE.get(self.element_buffer.strip(), self.element_buffer.strip()))[-TICKER_FIELD_LENGTHS['TEXT']:]
-        self.morse = (self.morse + self.element_buffer + ' ')[-TICKER_FIELD_LENGTHS['MORSE']:]
+        chardefault = self.element_buffer.strip() if self.unknown_chars == 'promote' else ''
+        char = MORSE.get(self.element_buffer.strip(), chardefault)
+        self.text = (self.text + char)[-TICKER_FIELD_LENGTHS['TEXT']:]
+        if(char or self.unknown_chars != 'hide'):
+            self.morse = (self.morse + self.element_buffer + ' ')[-TICKER_FIELD_LENGTHS['MORSE']:]
         self.element_buffer = ''
 
     def complete_word(self):
-        print(f"|{self.morse}|")
         if self.morse.endswith('/'):
             return
         self.complete_character()
@@ -138,12 +143,12 @@ class TimingDecoder:
 
 
 class UI_channel:
-    def __init__(self, axs, fbin, timevals, ticker, last_updated):
+    def __init__(self, axs, fbin, timevals, ticker, last_updated, unknown_chars):
         self.ticker = ticker
         self.last_updated = last_updated
         self.timevals = timevals
         self.axs = axs
-        self.decoder = TimingDecoder()
+        self.decoder = TimingDecoder(unknown_chars)
         self.active = False
         self.keyline_data = np.zeros_like(self.timevals)
         self.keyline = self.axs[0].plot(self.timevals, self.keyline_data, color = 'white', drawstyle='steps-post')[0]
@@ -186,7 +191,7 @@ class UI_channel:
             self.keyline.set_linestyle('none')
         m, t = int(TICKER_FIELD_LENGTHS['MORSE']), int(TICKER_FIELD_LENGTHS['TEXT'])
         morse = (' ' * m + d.morse + d.element_buffer)[-m:]
-        new_text = f" {d.wpm:3.0f} wpm|{morse:<{m}}|{d.text[-t:]:<{t}}"
+        new_text = f" {d.wpm:3.0f} wpm | {morse:<{m}} | {d.text[-t:]:<{t}}"
         if(self.ticker.get_text() != new_text):
             self.ticker.set_text(new_text)
             self.ticker.set_color('black')
@@ -219,15 +224,15 @@ class UI_waterfall:
         return self.spec_plot
 
 class Hot_loop:
-    def __init__(self, spectrum, hop_ms, channels, waterfall):
+    def __init__(self, spectrum, channels, waterfall):
         self.data_counter = 0
         self.abort = False
         self.last_hop = time.time()
-        threading.Thread(target = self.loop, args = (spectrum, hop_ms, channels, waterfall,) ).start()
+        threading.Thread(target = self.loop, args = (spectrum, channels, waterfall,) ).start()
         
-    def loop(self, spectrum, hop_ms, channels, waterfall):
+    def loop(self, spectrum, channels, waterfall):
         while True:
-            delay = hop_ms/1000 - (time.time() - self.last_hop)
+            delay = HOP_MS/1000 - (time.time() - self.last_hop)
             if(delay > 0):
                 time.sleep(delay)
             else:
@@ -285,21 +290,21 @@ def define_figure(nf):
     
     return fig, axs
                     
-def run(input_device_keywords, freq_range, df, n_decoders, hop_ms, display_decimate):
+def run(input_device_keywords, freq_range, df, n_decoders, unknown_chars):
     
-    display_nt = int(DISPLAY_DUR * 1000 / hop_ms)
+    display_nt = int(DISPLAY_DUR * 1000 / HOP_MS)
     timevals = np.linspace(0, DISPLAY_DUR, display_nt)
     spectrum = Spectrum(input_device_keywords, df,  freq_range)
     fig, axs = define_figure(spectrum.nf)
     waterfall = UI_waterfall(axs, spectrum.nf, timevals)
     spec_plot = waterfall.display()
-    channels = [UI_channel(axs, fb, timevals, axs[1].text(0, fb, ''), time.time()) for fb in range(spectrum.nf)]
+    channels = [UI_channel(axs, fb, timevals, axs[1].text(0, fb, ''), time.time(), unknown_chars) for fb in range(spectrum.nf)]
     keylines = [ch.keyline for ch in channels]
     ch_mgr = Channel_manager(channels, waterfall, n_decoders)
-    hot_loop = Hot_loop(spectrum, hop_ms, channels, waterfall)
+    hot_loop = Hot_loop(spectrum, channels, waterfall)
 
     def animation_callback(frame):
-        while hot_loop.data_counter < display_decimate :
+        while hot_loop.data_counter < DISPLAY_DECIMATE:
             time.sleep(0)
         hot_loop.data_counter = 0
         spec_plot = waterfall.display()
@@ -312,6 +317,7 @@ def run(input_device_keywords, freq_range, df, n_decoders, hop_ms, display_decim
 
 def cli():
     parser = argparse.ArgumentParser(prog='PyMorseRx', description = 'Command Line Morse decoder')
+
     parser.add_argument('-i', '--inputcard_keywords', help = 'Comma-separated keywords to identify the input sound device', default = "Mic, CODEC") 
     parser.add_argument('-df', '--df', help = 'Frequency step, Hz', default = 40) 
     parser.add_argument('-fr', '--freq_range', help = 'Frequency range Hz e.g. [600,800]', default = [200, 800]) 
@@ -319,15 +325,11 @@ def cli():
     parser.add_argument('-u','--unknown_chars', help = 'Hide, keep, promote unknown characters', default = 'promote') 
     
     args = parser.parse_args()
-    input_device_keywords = args.inputcard_keywords.replace(' ','').split(',') if args.inputcard_keywords is not None else None
-    df = args.df
-    freq_range = np.array(args.freq_range)
-    n_decoders = args.n_decoders
-    unknown_chars = args.unknown_chars
-    run(input_device_keywords, freq_range, df, n_decoders,  hop_ms = 10, display_decimate = 2)
+    input_device_keywords = args.inputcard_keywords.replace(' ','').split(',')
+    run(input_device_keywords, args.freq_range, args.df, args.n_decoders, args.unknown_chars)
 
 if __name__ == '__main__':
-    run(['Mic', 'CODEC'], [200,800], df = 40, n_decoders = 3,  hop_ms = 10, display_decimate = 2)
+    run(['Mic', 'CODEC'], [200,800], df = 40, n_decoders = 3, unknown_chars = 'hide')
 
 
 
