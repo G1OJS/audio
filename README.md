@@ -2,9 +2,7 @@
 
 Simple multi-channel timing-based morse decoder written in ~300 lines of Python. 
 
-Still working on getting noise suppression right!
-
-https://github.com/user-attachments/assets/349ecdd0-8cf6-495d-8bd2-a526c643ba61
+https://github.com/user-attachments/assets/a94d5f75-3a7c-4923-a95c-cbe88091b095
 
 ## Installation
 Install from PyPI using
