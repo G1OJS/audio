@@ -1,6 +1,6 @@
 [project]
 name = "PyMorseLive"
-version = "0.4.0"
+version = "0.5.0"
 license = "GPL-3.0-or-later"
 
 authors = [
@@ -30,4 +30,4 @@ packages = ["pymorse"]
 license-files = ["LICENSE"]
 
 [project.scripts]
-pymorse = "pymorse.PyMorse_OOK:cli"
+pymorse = "pymorse.pymorse:cli"
